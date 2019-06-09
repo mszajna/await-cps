@@ -1,7 +1,7 @@
 (ns await-cps-test
-  (:refer-clojure :exclude [await deref])
+  (:refer-clojure :exclude [await])
   (:require [clojure.test :refer :all]
-            [await-cps :refer [async await deref]]))
+            [await-cps :refer [async await]]))
 
 ; The goal of this library is to enable writing CPS (continuation-passing style)
 ; code preserving the flow of synchronous code. It achieves that elevating
@@ -17,7 +17,9 @@
   (throw (ex-info "immed-failing" {})))
 
 (deftest async-await
-  (are [a b] (= a (deref (async b)))
+  (are [a b] (let [p (promise)]
+               (async #(deliver p %) #(deliver p %) b)
+               (= a (deref p 1000 :timeout)))
     1 1
     1 (await successful-async 1)
 
@@ -49,10 +51,14 @@
   (let [efs (atom nil)
         eff (fn [n] (swap! efs conj n))
         fail (fn [n r e] (eff n) (e (ex-info "err" {})))
-        succ (fn [n v r e] (eff n) (r v))
-        effects (fn [as] (reset! efs []) (try (deref as) (catch Throwable t nil)) @efs)]
-    (are [a b] (= a (effects (async b)))
+        succ (fn [n v r e] (eff n) (r v))]
+    (are [a b] (let [p (promise)]
+                 (reset! efs [])
+                 (async #(deliver p %) #(deliver p %) b)
+                 (deref p 1000 :timeout)
+                 (= a @efs))
       ["a"] (eff "a")
+      ["a" "b"] (await succ "b" (eff "a"))
       ["a"] (let [x (await fail "a") z (eff "b")] (eff "c"))
       ["a" "c"] (if (await succ "a" false) (eff "b") (eff "c"))
       ["a" "c"] (if (await succ "a" false) (eff "b") (eff "c"))
