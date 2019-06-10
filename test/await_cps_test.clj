@@ -16,15 +16,21 @@
 (defn immed-failing-async [r e]
   (throw (ex-info "immed-failing" {})))
 
+(def ex (ex-info "an exception" {}))
+
 (deftest async-await
   (are [a b] (= a (let [p (promise)]
-                   (async #(deliver p %) #(deliver p %) b)
+                   (try (async #(deliver p %) #(deliver p %) b) (catch Throwable t (deliver t)))
                    (deref p 100 :timeout)))
     1 1
     1 (await successful-async 1)
 
-    ; 1 (try (await failing-async) (catch clojure.lang.ExceptionInfo e 1))
-    ; 1 (try (await immed-failing-async) (catch clojure.lang.ExceptionInfo e 1))
+    1 (do (await successful-async 0) 1)
+    ex (do (await successful-async 0) (throw ex))
+
+    1 (try (await failing-async) (catch clojure.lang.ExceptionInfo e 1))
+    1 (try (await immed-failing-async) (catch clojure.lang.ExceptionInfo e 1))
+    ex (try (await failing-async) (catch Throwable t (throw ex)))
 
     1 (if (await successful-async false) 0 1)
     1 (if true (await successful-async 1) 0)
@@ -54,12 +60,14 @@
         succ (fn [n v r e] (future (eff n) (r v)))]
     (are [a b] (= a (let [p (promise)]
                     (reset! efs [])
-                    (async #(deliver p %) #(deliver p %) b)
+                    (try (async #(deliver p %) #(deliver p %) b) (catch Throwable t (deliver p t)))
                     (deref p 100 :timeout)
                     @efs))
       ["a"] (eff "a")
       ["a" "b"] (await succ "b" (eff "a"))
       ["a" "b" "c"] (str (eff "a") (await succ "b" nil) (eff "c"))
+      ["a" "b"] (do (eff "a") (await succ "b" nil))
+      ["a" "b"] (do (await succ "a" nil) (eff "b"))
       ["a"] (let [x (await fail "a") z (eff "b")] (eff "c"))
       ["a" "c"] (if (await succ "a" false) (eff "b") (eff "c"))
       ["a" "c"] (if (await succ "a" false) (eff "b") (eff "c"))
@@ -70,4 +78,5 @@
       ["a" "b"] (try (eff "a") (finally (await succ "b" nil)))
       ["b"] (try (throw (ex-info "a" {})) (finally (await succ "b" nil)))
       ["a" "b" "c"] (try (await fail "a") (catch Throwable t (eff "b")) (finally (eff "c")))
+      ["a" "b" "c"] (try (await fail "a") (catch Throwable t (eff "b")) (finally (await succ "c" nil)))
     )))
