@@ -4,7 +4,8 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :refer [for-all]]
-            [await-cps :refer [async await]]))
+            [await-cps :refer [async await]]
+            [generators :as g]))
 
 ; The goal of this library is to enable writing CPS (continuation-passing style)
 ; code preserving the flow of synchronous code. It achieves that elevating
@@ -27,9 +28,6 @@
     (let [result (try (eval form) (catch Throwable t [:exception (.getMessage t)]))]
       [@side-effects result])))
 
-(defn sync-equiv? [form]
-  (= (run-sync form) (run-async form)))
-
 (defn explain [form]
   (clojure.pprint/pprint
     {:compiled (await-cps/async* 'r 'e form)
@@ -43,17 +41,21 @@
 (defn effect [s] (swap! side-effects concat [s]))
 
 (defn return
-  ([s v] (effect s) v)
-  ([s v r e] (effect s) (future (r v))))
+  ([syms s v] (effect s) v)
+  ([syms s v r e] (effect s) (future (r v))))
 (defn fail
-  ([s t] (effect s) (throw t))
-  ([s t r e] (effect s) (future (e t))))
+  ([syms s v] (effect s) (throw exc))
+  ([syms s v r e] (effect s) (future (e exc))))
 
-(defn returning [v]
-  (gen/let [_ (gen/return nil)]
-    (let [s (str (gensym))] ; Function calls need identity
-      (gen/elements [`(return ~s ~v) `(await return ~s ~v)
-                     `(fail ~s exc) `(await fail ~s exc)]))))
+(defn fn-arity-1 [syms]
+  (gen/fmap (fn [f] (f (gensym "side-effect-")))
+    (gen/elements [(fn [s] `(return ~syms ~s)) (fn [s] `(await return ~syms ~s))
+                   (fn [s] `(fail ~syms ~s)) (fn [s] `(await fail ~syms ~s))])))
+
+(defn returning
+  ([v] (returning nil v))
+  ([syms v]
+    (gen/fmap (fn [f] `(~@f ~v)) (fn-arity-1 syms))))
 
 (def any-call (gen/let [v gen/keyword]
                 (returning v)))
@@ -86,17 +88,36 @@
                 `(let [~a-sym ~a-val
                        ~b-sym ~b-val] ~@calls))))
 
+(def catch-clause
+  (gen/let [cls (gen/elements ['clojure.lang.ExceptionInfo 'UnsupportedOperationException])
+            bnd bindable
+            body (gen/vector any-call 1 2)]
+    `(catch ~cls ~bnd ~@body)))
+
+(def finally-clause
+  (gen/let [body (gen/vector any-call 1 2)]
+    `(finally ~@body)))
+
 (defspec try-form 30
-  (let [gen-catch (gen/let [cls (gen/elements ['clojure.lang.ExceptionInfo 'UnsupportedOperationException])
-                            bnd bindable
-                            body (gen/vector any-call 1 2)]
-                    `(catch ~cls ~bnd ~@body))
-        gen-finally (gen/let [body (gen/vector any-call 1 2)]
-                      `(finally ~@body))]
-    (sync-equiv (gen/let [body (gen/vector any-call 1 3)
-                          catches (gen/vector gen-catch 0 2)
-                          finally (gen/vector gen-finally 0 1)]
-                  `(try ~@body ~@catches ~@finally)))))
+  (sync-equiv (gen/let [body (gen/vector any-call 1 3)
+                        catches (gen/vector catch-clause 0 2)
+                        finally (gen/vector finally-clause 0 1)]
+                `(try ~@body ~@catches ~@finally))))
+
+
+(defspec f-try-if 30
+  (sync-equiv (gen/let [f (fn-arity-1 nil)
+                        a any-call
+                        c (fn-arity-1 nil)
+                        b any-call
+                        e any-call
+                        catches (gen/vector catch-clause 0 2)
+                        finally (gen/vector finally-clause 0 1)]
+                `(~@f (try (if ~a (~@c ~b) ~e) ~@catches ~@finally)))))
+
+(defspec arbitrary-code 1000
+  (sync-equiv (g/clojure-code #(gen/let [v %2] (returning %1 v)) (gen/fmap (fn [_] (str (gensym))) (gen/return nil)))))
+
 
 ; Old stuff
 
