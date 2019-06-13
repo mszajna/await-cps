@@ -1,11 +1,11 @@
 (ns await-cps
-  (:refer-clojure :exclude [await deref])
-  (:require [clojure.walk :refer [prewalk macroexpand-all]]))
+  (:refer-clojure :exclude [await])
+  (:require [clojure.walk :refer [prewalk]]))
 
 (defn await [f & args]
   (throw (new IllegalStateException "await called outside async block")))
 
-(defn- has-async? [form]
+(defn has-async? [form]
   (or (and (coll? form) (some has-async? form))
       (and (seq? form) (symbol? (first form)) (= #'await (resolve (first form))))))
 
@@ -24,8 +24,8 @@
         (case head
           (quote var fn* def deftype* reify letfn* import) (r form)
           (. new set! monitor-enter monitor-exit) (call)
-          do (let [[syncs [asn & others]] (split-with #(not (has-async? %)) tail)
-                   asn-form (when asn (walk asn (fn [v] (if others (walk (->do others) r e) (r v))) e))]
+          do (let [[syncs [asn & others]] (split-with #(not (has-async? %)) tail) ; Is testing has-async without full macroexpansion ok? 
+                   asn-form (when asn (walk asn (fn [v] (if others (walk `(do ~v ~@others) r e) (r v))) e))]
                (cond (and (seq syncs) asn-form) `(do ~@syncs ~asn-form)
                      asn-form asn-form
                      :else (r `(do ~@syncs))))
@@ -63,7 +63,7 @@
 
       (seq? form) (call)
       (vector? form) ((reduce (fn [r x] (fn [xs] (walk x (fn [x'] (if (coll? x')
-                                                                    (let [v (gensym "v")] `(let [~v ~x] ~(r `(~@xs ~v))))
+                                                                    (let [v (gensym "v")] `(let [~v ~x'] ~(r `(~@xs ~v))))
                                                                     (r `(~@xs ~x')))) e)))
                               (fn [xs] (r (vec xs)))
                               (reverse form)) nil)
