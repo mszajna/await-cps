@@ -7,6 +7,13 @@
   (gen/fmap (fn [[c & alts]] `(if (->bool ~c) ~@alts))
             (gen/vector body-gen 2 3)))
 
+(defn a-case [body-gen]
+  (gen/fmap (fn [[exp value cases default]] `(case (do ~exp ~value) ~@(mapcat identity cases) ~@default))
+            (gen/tuple body-gen
+                       (gen/elements [:a :b])
+                       (gen/vector-distinct-by first (gen/tuple (gen/elements [:a :b :c]) body-gen) {:max-elements 3})
+                       (gen/vector body-gen 0 1))))
+
 (defn a-do [body-gen]
   (gen/fmap (fn [f] `(do ~@f))
             (gen/vector body-gen 0 3)))
@@ -28,4 +35,5 @@
   (gen/frequency [[10 (an-if body-gen)]
                   [10 (a-do body-gen)]
                   [10 (a-let body-gen)]
+                  [5 (a-case body-gen)]
                   [5 (a-try body-gen)]]))

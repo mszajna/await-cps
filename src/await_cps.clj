@@ -2,10 +2,16 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.walk :refer [prewalk]]))
 
-(defn await [f & args]
+(defn await
+  "Awaits asynchronous execution of continuation-passing style function f,
+   applying it to args and two callbacks for success and failure. Will return
+   the value passed to success callback or throw the value passed to failure
+   callback. Must be called inside async block."
+  [f & args]
   (throw (new IllegalStateException "await called outside async block")))
 
-(defn has-async? [form]
+(defn has-async? {:no-doc true}
+  [form]
   (or (and (coll? form) (some has-async? form))
       (and (seq? form) (symbol? (first form)) (= #'await (resolve (first form))))))
 
@@ -75,7 +81,12 @@
   (let [t (gensym "t")]
     (walk form (fn [v] `(~ret ~v)) (fn [form] `(try ~form (catch Throwable ~t (~err ~t)))))))
 
-(defmacro async [ret err & body]
+(defmacro async
+  "Executes the body eventually calling ret with the result if successful.
+   Any exceptions will either bubble up normally or will be passed to err.
+   If the body contains await clauses the execution will not block the calling
+   thread."
+  [ret err & body]
   (let [r (gensym "r")
         e (gensym "e")]
-    `(let [~r ~ret ~e ~err] ~(async* r e `(do ~@body)))))
+    `(let [~r ~ret ~e ~err] ~(async* r e `(do ~@body)) nil)))

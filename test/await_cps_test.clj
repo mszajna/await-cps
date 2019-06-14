@@ -17,17 +17,19 @@
 (defn run-async [form]
   (reset! side-effects nil)
   (let [form `(let [result# (promise)]
-                (async #(deliver result# %) #(deliver result# [:ex-info (.getMessage %)]) ~form)
+                (async #(deliver result# %) #(deliver result# [:ex (.getMessage %)]) ~form)
                 result#)
         result (try (deref (eval form) timeout :timeout)
-                    (catch clojure.lang.ExceptionInfo t [:ex-info (.getMessage t)]))]
+                    (catch clojure.lang.ExceptionInfo t [:ex (.getMessage t)])
+                    (catch IllegalArgumentException t [:ex (.getMessage t)]))]
     [@side-effects result]))
 
 (defn run-sync [form]
   (reset! side-effects nil)
   (with-redefs [await #(apply % %&)]
     (let [result (try (eval form)
-                      (catch clojure.lang.ExceptionInfo t [:ex-info (.getMessage t)]))]
+                      (catch clojure.lang.ExceptionInfo t [:ex (.getMessage t)])
+                      (catch IllegalArgumentException t [:ex (.getMessage t)]))]
       [@side-effects result])))
 
 (defn sync-equiv [gen-form]
@@ -74,7 +76,7 @@
 
 (def bindable (gen/fmap symbol gen/keyword))
 
-(defspec let-bindings-are-available-to-async-code-down-stream 20
+(defspec let-bindings-are-available-to-async-code-downstream 20
   (sync-equiv (gen/let [a-sym bindable
                         a-val (arbitrary-code (gen/elements [:a :b :c :d]))
                         b-sym bindable
