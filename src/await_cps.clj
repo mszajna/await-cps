@@ -24,12 +24,12 @@
   (let [form (macroexpand form)
         call (fn [] (walk (vec form) (comp r seq) e))]
     (cond
-      (not (has-async? form)) (r form)
+      (and (not (has-async? form)) (not recur-target)) (r form) ; TODO: actively look for recurs while processing loop
       (and (seq? form) (special-symbol? (first form)))
       (let [[head & tail] form]
         (case head
           (quote var fn* def deftype* reify letfn* import) (r form)
-          (. new set! monitor-enter monitor-exit) (call)
+          (. new set! monitor-enter monitor-exit throw) (call)
           do (let [[syncs [asn & others]] (split-with #(not (has-async? %)) tail) ; Is testing has-async without full macroexpansion ok? 
                    asn-form (when asn (walk asn (fn [v] (if others (walk `(do ~v ~@others) r e) (r v))) e))]
                (cond (and (seq syncs) asn-form) `(do ~@syncs ~asn-form)
@@ -59,7 +59,7 @@
                           (binding [recur-target (gensym "rec")]
                             (prewalk identity ; `binding` doesn't play nice with lazy seq
                               `(letfn [(~recur-target [~@bind-names] ~(walk (->do body) r e))] (apply ~recur-target ~bind-vals))))) e))
-          recur (walk (vec tail) (fn [step-vals] `(~recur-target ~@step-vals)) e)
+          recur (let [target recur-target] (walk (vec tail) (fn [step-vals] `(~target ~@step-vals)) e))
           (throw (ex-info "Unknown special form" {:unknown-special-form head}))))
 
       (and (seq? form) (symbol? (first form)) (= #'await (resolve (first form))))
