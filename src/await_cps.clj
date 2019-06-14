@@ -28,7 +28,7 @@
       (and (seq? form) (special-symbol? (first form)))
       (let [[head & tail] form]
         (case head
-          (quote var fn* def deftype* reify letfn* import) (r form)
+          (quote var fn* def deftype* reify* letfn* clojure.core/import*) (r form)
           (. new set! monitor-enter monitor-exit throw) (call)
           do (let [[syncs [asn & others]] (split-with #(not (has-async? %)) tail) ; Is testing has-async without full macroexpansion ok? 
                    asn-form (when asn (walk asn (fn [v] (if others (walk `(do ~v ~@others) r e) (r v))) e))]
