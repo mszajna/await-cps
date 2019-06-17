@@ -18,14 +18,18 @@
   (gen/fmap (fn [f] `(do ~@f))
             (gen/vector body-gen 0 3)))
 
+(def symbols ['a 'b 'c])
+
+(def a-symbol (gen/elements symbols))
+
 (defn a-let [body-gen]
-  (gen/fmap (fn [[bindings body]] `(let [~@(mapcat (fn [b] `[sym# ~b]) bindings)] ~@body))
-            (gen/tuple (gen/vector body-gen 1 2) (gen/vector body-gen 0 3))))
+  (gen/fmap (fn [[bindings body]] `(let [~@(mapcat identity bindings)] ~@body))
+            (gen/tuple (gen/vector (gen/tuple a-symbol body-gen) 1 2) (gen/vector body-gen 0 3))))
 
 (defn a-loop [body-gen]
-  (gen/fmap (fn [[n bindings body result]] `(loop [n# ~n ~@(mapcat (fn [b] `[sym# ~b]) bindings)]
+  (gen/fmap (fn [[n bindings body result]] `(loop [n# ~n ~@(mapcat identity bindings)]
                                               ~@body (if (> n# 0) (recur (dec n#) ~@bindings) ~result)))
-            (gen/tuple (gen/choose 0 2) (gen/vector body-gen 0 2) (gen/vector body-gen 0 2) body-gen)))
+            (gen/tuple (gen/choose 0 2) (gen/vector (gen/tuple a-symbol body-gen) 0 2) (gen/vector body-gen 0 2) body-gen)))
 
 (defn a-catch [body-gen]
   (gen/fmap (fn [[cls body]] `(catch ~cls sym# ~@body))

@@ -16,20 +16,21 @@
 
 (defn run-async [form]
   (reset! side-effects nil)
-  (let [form `(let [result# (promise)]
-                (async #(deliver result# %) #(deliver result# [:ex (.getMessage %)]) ~form)
+  (let [form `(let [result# (promise)
+                    ~@(interpose "undef" g/symbols) "undef"]
+                (async #(deliver result# %) #(deliver result# [:ex (.getMessage ^Exception %)]) ~form)
                 result#)
         result (try (deref (eval form) timeout :timeout)
-                    (catch clojure.lang.ExceptionInfo t [:ex (.getMessage t)])
-                    (catch IllegalArgumentException t [:ex (.getMessage t)]))]
+                    (catch clojure.lang.ExceptionInfo t [:ex (.getMessage ^Exception t)])
+                    (catch IllegalArgumentException t [:ex (.getMessage ^Exception t)]))]
     [@side-effects result]))
 
 (defn run-sync [form]
   (reset! side-effects nil)
   (with-redefs [await #(apply % %&)]
-    (let [result (try (eval form)
-                      (catch clojure.lang.ExceptionInfo t [:ex (.getMessage t)])
-                      (catch IllegalArgumentException t [:ex (.getMessage t)]))]
+    (let [result (try (eval `(let [~@(interpose "undef" g/symbols) "undef"] ~form))
+                      (catch clojure.lang.ExceptionInfo t [:ex (.getMessage ^Exception t)])
+                      (catch IllegalArgumentException t [:ex (.getMessage ^Exception t)]))]
       [@side-effects result])))
 
 (defn sync-equiv [gen-form]
@@ -38,9 +39,9 @@
 
 (defn explain [form]
   (clojure.pprint/pprint
-    {:compiled (await-cps/async* 'r 'e form)
-     :sync (run-sync form)
-     :async (run-async form)}))
+    {:compiled (clojure.walk/macroexpand-all `(async r e ~form))
+     :sync (try (run-sync form) (catch Throwable t [:exception (.getMessage ^Exception t)]))
+     :async (try (run-async form) (catch Throwable t [:exception (.getMessage ^Exception t)]))}))
 
 (defn effect [s] (swap! side-effects concat [s]))
 
@@ -72,15 +73,4 @@
   (gen/recursive-gen #(gen/one-of [(side-effectful-call %) (g/clojure-code %)]) val-gen))
 
 (defspec arbitrary-async-code-evaluation-equivalent-to-sync 200
-  (sync-equiv (arbitrary-code (gen/elements [:a :b :c :d]))))
-
-(def bindable (gen/fmap symbol gen/keyword))
-
-(defspec let-bindings-are-available-to-async-code-downstream 20
-  (sync-equiv (gen/let [a-sym bindable
-                        a-val (arbitrary-code (gen/elements [:a :b :c :d]))
-                        b-sym bindable
-                        b-val (arbitrary-code (gen/return a-sym))
-                        calls (gen/vector (arbitrary-code (gen/elements [a-sym b-sym])) 0 3)]
-                `(let [~a-sym ~a-val
-                      ~b-sym ~b-val] ~@calls))))
+  (sync-equiv (arbitrary-code (gen/one-of [g/a-symbol (gen/elements [:a :b :c])]))))

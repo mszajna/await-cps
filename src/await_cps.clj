@@ -1,6 +1,5 @@
 (ns await-cps
-  (:refer-clojure :exclude [await])
-  (:require [clojure.walk :refer [prewalk]]))
+  (:refer-clojure :exclude [await]))
 
 (defn await
   "Awaits asynchronous execution of continuation-passing style function f,
@@ -10,94 +9,119 @@
   [f & args]
   (throw (new IllegalStateException "await called outside async block")))
 
-(def ^:private ^:dynamic recur-target) ; compile-time use only
-
 (defn has-async? {:no-doc true}
-  [form]
-  (or (and (coll? form) (some has-async? form))
-      (and (seq? form) (symbol? (first form)) (= #'await (resolve (first form))))
-      (and recur-target (seq? form) (symbol? (first form)) (= 'recur (first form)))))
+ ([form] (has-async? form true))
+ ([form include-recurs?]
+  (let [f (if (and (seq? form) (symbol? (first form))) (first form))]
+    (cond (and f (= #'await (resolve f))) true
+          (and include-recurs? (= 'recur f)) true
+          (= 'loop f) (some #(has-async? % false) (rest f))
+          (coll? form) (some #(has-async? % include-recurs?) form)
+          :else false))))
 
-(defn- ->do [forms]
-  (if (<= 2 (count forms)) `(do ~@forms) (first forms)))
+(defmacro async* [{:keys [r e sync-loop recur-target] :as ctx} form]
+  (let [form (macroexpand form)]
+    (letfn [(call [form bnd->form]
+              (let [[syncs [asn & others]] (split-with #(not (has-async? %)) form)
+                    sync-bindings (repeatedly (count syncs) #(gensym))
+                    async-binding (gensym)
+                    cont (gensym "cont")]
+                (if asn
+                 `(let [~@(interleave sync-bindings syncs)] ; TODO: some things don't need rebinding (local symbols in &env and literals)
+                    (letfn [(~cont [~async-binding]
+                             ~(call others (fn [bnds] (bnd->form `[~@sync-bindings ~async-binding ~@bnds]))))]
+                      (async* ~(assoc ctx :r cont) ~asn)))
+                 (bnd->form form))))]
+      (cond
+        (not (has-async? form recur-target)) `(~r ~form)
+        (and (seq? form) (special-symbol? (first form)))
+        (let [[head & tail] form]
+          (case head
+            (quote var fn* def deftype* reify* clojure.core/import*) `(~r ~form)
+            (monitor-enter monitor-exit throw) (call tail (fn [bnds] `(~r (~head ~@bnds))))
+            new (call (rest tail) (fn [bnds] `(~r (new ~(first tail) ~@bnds))))
+            .
+            (if (symbol? (first tail))
+              (call (rest tail) (fn [bnds] `(~r (~head ~(first tail) ~@bnds))))
+              (call tail (fn [bnds] `(~r (~head ~@bnds)))))
+            set!
+            (if (and (seq? (first tail)) (= '. (ffirst tail)))
+              (if (symbol? (second (first tail))) ; assignment special form, TODO: only when the symbol is *not* local (see &env) and resolves to a class
+                (call [(nnext (first tail)) (rest tail)] (fn [[v bnds]] `(set! (. ~(second (first tail)) ~@v) ~@bnds)))
+                (call [(rest (first tail)) (rest tail)] (fn [[v bnds]] `(set! (. ~@v) ~@bnds))))
+              (call (rest tail) (fn [bnds] `(set! ~@bnds))))
+            if
+            (let [[con left right] tail
+                  cont (gensym "cont")]
+              (if (has-async? con)
+                (let [ctx (dissoc ctx :sync-loop)]
+                 `(letfn [(~cont [con#] (if con# (async* ~ctx ~left) (async* ~ctx ~right)))]
+                    (async* ~(assoc ctx :r cont) ~con)))
+               `(if ~con (async* ~ctx ~left) (async* ~ctx ~right))))
+            case*
+            (let [[ge shift mask default imap & args] tail
+                  imap (reduce-kv #(assoc %1 %2 (update %3 1 (fn [v] `(async* ~ctx ~v)))) {} imap)]
+              `(case* ~ge ~shift ~mask (async* ~ctx ~default) ~imap ~@args))
+            let*
+            (let [[syncs [[sym asn] & others]] (->> tail first (partition 2) (split-with #(not (has-async? %))))
+                  cont (gensym "cont")]
+             `(let* [~@(mapcat identity syncs)]
+               ~(if asn
+                 `(letfn [(~cont [~sym] (async* ~(dissoc ctx :sync-loop) (let* [~@(mapcat identity others)] ~@(rest tail))))]
+                    (async* ~(assoc ctx :r cont) ~asn))
+                 `(async* ~ctx (do ~@(rest tail))))))
+            letfn* `(letfn* [~@(first tail)] (async* ~ctx (do ~@(rest tail))))
+            do
+            (let [[syncs [asn & others]] (split-with #(not (has-async? %)) tail)
+                  cont (gensym "cont")]
+              (if asn
+               `(do ~@syncs
+                    ~(if others
+                      `(letfn [(~cont [_#] (async* ~(dissoc ctx :sync-loop) (do ~@others)))]
+                         (async* ~(assoc ctx :r cont) ~asn))
+                      `(async* ~ctx ~asn)))
+               `(~r ~form)))
+            loop*
+            (let [[binds & body] tail
+                  bind-names (->> binds (partition 2) (map first))]
+              (cond
+                (has-async? binds)
+               `(async* ~ctx (let [~@binds] (loop [~@(interleave bind-names bind-names)] ~@body)))
+                (has-async? body)
+                (let [recur-target (gensym "recur")]
+                 `(letfn [(~recur-target [~@bind-names]
+                            (loop [~@(interleave bind-names bind-names)]
+                              (async* ~(assoc ctx :sync-loop true :recur-target recur-target) (do ~@body))))]
+                    (let [~@binds] (~recur-target ~@bind-names))))
+                :else `(~r ~form)))
+            recur
+            (cond
+              (and sync-loop (not (has-async? form false))) form
+              recur-target (call tail (fn [args] `(~recur-target ~@args)))
+              :else (throw (new IllegalStateException "recur outside of loop")))
+            try
+            (let [[body cfs] (split-with #(not (and (seq? %) (#{'catch 'finally} (first %)))) tail)
+                  [catches finally] (if (->> cfs last first (= 'finally))
+                                      [(map rest (drop-last cfs)) (rest (last cfs))]
+                                      [(map rest cfs)])
+                  fin (gensym "finally") finThrow (gensym "finallyThrow") cat (gensym "catch")]
+             `(letfn [(~fin [v#] (future (try (async* ~ctx (do ~@finally v#)) (catch Throwable t# (~e t#)))))
+                      (~finThrow [t#] (future (try (async* ~ctx (do ~@finally (throw t#))) (catch Throwable t# (~e t#)))))
+                      (~cat [t#] (try (try (throw t#)
+                                       ~@(map (fn [[cls bnd & body]] `(catch ~cls ~bnd (async* ~(assoc ctx :r fin :e finThrow) (do ~@body))))
+                                              catches))
+                                      (catch Throwable t# (~finThrow t#))))]
+                (try (async* ~(assoc ctx :r fin :e cat) (do ~@body))
+                  (catch Throwable t# (~cat t#)))))
+            (throw (ex-info (str "Don't know how to handle special form [" head "]") {:unknown-special-form head}))))
+        (and (seq? form) (symbol? (first form)) (= #'await (resolve (first form))))
+        (call (rest form) (fn [args] `(~@args (fn [v#] (try (~r v#) (catch Throwable t# (~e t#)))) (fn [t#] (~e t#)))))
 
-
-; (walk (await-cps/await a (loop [n 1] (if (> n 0) (recur (dec n)) :a))) 
-
-
-(defn- walk [form r e]
-  (let [form (macroexpand form)
-        call (fn [] (walk (vec form) (comp r seq) e))]
-    (cond
-      (not (has-async? form)) (r form) ; TODO: actively look for recurs while processing loop
-      (and (seq? form) (special-symbol? (first form)))
-      (let [[head & tail] form]
-        (case head
-          (quote var fn* def deftype* reify* letfn* clojure.core/import*) (r form)
-          (. new set! monitor-enter monitor-exit throw) (call)
-          do (let [[syncs [asn & others]] (split-with #(not (has-async? %)) tail)
-                   asn-form (when asn (walk asn (fn [v] (if others (walk `(do ~v ~@others) r e) (r v))) e))]
-               (cond (and (seq syncs) asn-form) `(do ~@syncs ~asn-form)
-                     asn-form asn-form
-                     :else (r `(do ~@syncs))))
-          if (let [[con left right] tail]
-                (walk con (fn [c] `(if ~c ~@(map #(walk % r e) [left right]))) e))
-          case* (let [[ge shift mask default imap & args] tail
-                      imap (reduce-kv #(assoc %1 %2 (update %3 1 (fn [v] (walk v r e)))) {} imap)]
-                  `(case* ~ge ~shift ~mask ~(walk default r e) ~imap ~@args))
-          let* (let [[syncs [[sym asn] & others]] (->> tail first (partition 2)
-                                                       (split-with #(not (has-async? %))))
-                     asn-form (when asn (walk asn (fn [v] (walk `(let* [~sym ~v ~@(mapcat identity others)]
-                                                                   ~@(rest tail)) r e)) e))]
-                 (cond (and (seq syncs) asn-form) `(let* [~@(mapcat identity syncs)] ~asn-form)
-                       asn-form asn-form
-                       :else `(let* [~@(mapcat identity syncs)] ~(walk (->do (rest tail)) r e))))
-          try (let [[body cfs] (split-with #(not (and (seq? %) (#{'catch 'finally} (first %)))) tail)
-                    [catches finally] (if (->> cfs last first (= 'finally))
-                                        [(map rest (drop-last cfs)) (rest (last cfs))]
-                                        [(map rest cfs)])
-                    [untry v untry-throw] [(gensym "untry") (gensym "v") (gensym "untry-throw")]
-                    wrap-finally (fn [form] `(try ~form (catch Throwable t# (~untry-throw t#))))
-                    catches (map (fn [[cls bnd & body]]
-                                   `(catch ~cls ~bnd ~(walk (->do body) (fn [v] `(~untry ~v))
-                                                                        (fn [form] (e (wrap-finally form)))))) catches)
-                    wrap-catches (fn [form] (wrap-finally `(try ~form ~@catches)))]
-                `(letfn [(~untry [~v] (future ~(e (walk (->do finally) (fn [fin] `(do ~fin ~(r v))) e))))
-                         (~untry-throw [~v] (future ~(e (walk (->do finally) (fn [fin] `(do ~fin (throw ~v))) e))))]
-                  ~(wrap-catches (walk (->do body) (fn [v] `(~untry ~v)) (fn [v] (e (wrap-catches v)))))))
-          loop* (let [[binds & body] tail
-                      bind-names (->> binds (partition 2) (map first))]
-                  (cond
-                    (has-async? binds)
-                    (walk `(let [~@binds] (loop [~@(interleave bind-names bind-names)] ~@body)) r e)
-                    (has-async? body)
-                    (binding [recur-target (gensym "rec")]
-                      (prewalk identity ; `binding` doesn't play nice with nested lazy seqs
-                        `(letfn [(~recur-target [~@bind-names] ~(walk (->do body) r e))]
-                          (apply ~recur-target (let* [~@binds] [~@bind-names])))))
-                    :else form))
-          recur (let [target recur-target]
-                  (walk (vec tail) (fn [step-vals] `(~target ~@step-vals)) e))
-          (throw (ex-info "Unknown special form" {:unknown-special-form head}))))
-
-      (and (seq? form) (symbol? (first form)) (= #'await (resolve (first form))))
-      (let [v (gensym "v") t (gensym "t")]
-        (walk `[~@(rest form)] (fn [f] `(~@f (fn [~v] ~(e (r v)))
-                                             (fn [~t] ~(e `(throw ~t))))) e))
-
-      (seq? form) (call)
-      (vector? form) ((reduce (fn [r x] (fn [xs] (walk x (fn [x'] (if (coll? x')
-                                                                    (let [v (gensym "v")] `(let [~v ~x'] ~(r `(~@xs ~v))))
-                                                                    (r `(~@xs ~x')))) e)))
-                              (fn [xs] (r (vec xs)))
-                              (reverse form)) nil)
-      (map? form) (walk (vec (mapcat identity form)) #(->> % (partition 2) (map vec) (into {}) r) e)
-      (set? form) (walk (vec form) (comp r set) e)
-      :else (r form))))
-
-(defn async* [ret err form]
-  (let [t (gensym "t")]
-    (walk form (fn [v] `(~ret ~v)) (fn [form] `(try ~form (catch Throwable ~t (~err ~t)))))))
+        (seq? form) (call form (fn [form] `(~r ~(seq form))))
+        (vector? form) (call form (fn [form] `(~r ~(vec form))))
+        (set? form) (call form (fn [form] `(~r ~(set form))))
+        (map? form) (call (mapcat identity form) (fn [form] `(~r ~(->> form (partition 2) (map vec) (into {})))))
+        :else `(~r ~form)))))
 
 (defmacro async
   "Executes the body eventually calling ret with the result if successful.
@@ -105,6 +129,4 @@
    If the body contains await clauses the execution will not block the calling
    thread."
   [ret err & body]
-  (let [r (gensym "r")
-        e (gensym "e")]
-    `(let [~r ~ret ~e ~err] ~(async* r e `(do ~@body)) nil)))
+ `(let [r# ~ret e# ~err] (async* {:r r# :e e#} (do ~@body)) nil))
