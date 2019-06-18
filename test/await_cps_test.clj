@@ -4,12 +4,9 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :refer [for-all]]
-            [await-cps :refer [async await has-async?]]
+            [await-cps :refer [async await]]
+            [await-cps.impl :refer [has-async?]]
             [generators :as g]))
-
-; The goal of this library is to enable writing CPS (continuation-passing style)
-; code preserving the flow of synchronous code. It achieves that elevating
-; the CPS calls deep in a form all the way up
 
 (def side-effects (atom nil))
 (def timeout 50)
