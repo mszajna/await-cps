@@ -41,9 +41,9 @@ or with custom `defn`
 
 ## TODO
 
-- thread local vars
 - presereve meta
-- avoid capturing non-call values
 - test the remaining special symbols
 - test loop/recur for stack overflows
 - compilation error instead of ignoring extra arguments
+- primitives for concurrency and timeouts
+- reconsider the API (would be nice for cps/defn to include work async)

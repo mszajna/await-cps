@@ -22,11 +22,14 @@
    the execution will not block the calling thread."
   [resolve raise & body]
   (let [r (gensym)
-        e (gensym)]
+        e (gensym)
+        bnds (gensym)]
    `(let [~r ~resolve
-          ~e ~raise]
+          ~e ~raise
+          ~bnds (clojure.lang.Var/getThreadBindingFrame)]
       (try
-       ~(async* {:r r :e e} `(do ~@body))
+       ~(async* {:r r :e e :thead-binding-frame bnds}
+               `(do ~@body))
         (catch Throwable t# (~e t#)))
       nil)))
 

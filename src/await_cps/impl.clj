@@ -1,7 +1,7 @@
 (ns ^:no-doc await-cps.impl)
 
-(defn full-name [v]
-  (when-let [v (and (symbol? v) (resolve v))]
+(defn full-name [sym]
+  (when-let [v (and (symbol? sym) (resolve sym))]
     (let [nm (:name (meta v))
           nsp (.getName ^clojure.lang.Namespace (:ns (meta v)))]
       (symbol (name nsp) (name nm)))))
@@ -9,27 +9,32 @@
 (defn has-async?
  ([form] (has-async? form false))
  ([form include-recurs?]
-  (let [f (when (seq? form) (first form))]
-    (cond (= 'await-cps/await (full-name f)) true
-          (and include-recurs? (= 'recur f)) true
-          (= 'loop f) (some #(has-async? % false) (rest f))
+  (let [sym (when (seq? form) (first form))]
+    (cond (= 'await-cps/await (full-name sym)) true
+          (and include-recurs? (= 'recur sym)) true
+          (= 'loop sym) (some #(has-async? % false) (rest form))
           (coll? form) (some #(has-async? % include-recurs?) form)
           :else false))))
+
+(defn can-inline?
+  [form]
+  (or (and (vector? form) (every? can-inline? form))
+      (not (coll? form))))
 
 (declare async*)
 
 (defn resolve-all [ctx coll then]
   (let [[syncs [asn & others]] (split-with #(not (has-async? %)) coll)]
     (if asn
-      (let [sync-bindings (repeatedly (count syncs) #(gensym))
+      (let [syncs (map #(if (can-inline? %) [%] [(gensym) %]) syncs)
+            sync-bindings (->> syncs (filter second) (mapcat identity))
             async-binding (gensym)
             cont (gensym "cont")]
-        ; TODO: some things don't need rebinding (eg. local symbols in &env and literals)
-       `(let [~@(interleave sync-bindings syncs)]
+       `(let [~@sync-bindings]
           (letfn [(~cont [~async-binding]
                    ~(resolve-all (dissoc ctx :sync-recur?)
                                  others
-                                 (fn [bnds] (then `[~@sync-bindings ~async-binding ~@bnds]))))]
+                                 #(then `[~@(map first syncs) ~async-binding ~@%])))]
            ~(async* (assoc ctx :r cont) asn))))
       (then coll))))
 
@@ -53,7 +58,7 @@
        `(~r ~form)
 
         if
-        (let [[con left right] tail
+        (let [[con left right] tail ; TODO: compilation error if extra args
               cont (gensym "cont")]
           (if (has-async? con)
             (let [ctx' (dissoc ctx :sync-recur?)]
@@ -82,7 +87,7 @@
               (async* ctx `(do ~@(rest tail))))))
 
         letfn*
-       `(letfn* [~@(first tail)] ~(async* ctx `(do ~@(rest tail))))
+       `(letfn* ~(first tail) ~(async* ctx `(do ~@(rest tail))))
 
         do
         (let [[syncs [asn & others]] (split-with #(not (has-async? % (:recur-target ctx))) tail)
@@ -129,6 +134,7 @@
         try
         (let [catch-or-finally? #(and (seq? %) (#{'catch 'finally} (first %)))
               [body cfs] (split-with #(not (catch-or-finally? %)) tail)
+              ; TODO: validate that cfs is strictly catches followed by finally
               [catches finally] (if (->> cfs last first (= 'finally))
                                   [(map rest (drop-last cfs)) (rest (last cfs))]
                                   [(map rest cfs)])
@@ -174,7 +180,7 @@
         set!
         (let [[subject value] tail
               [object field] (when (and (seq? subject) (= '. (first subject)))
-                               subject)]
+                               subject)]  ; TODO: compilation error if extra args
           (if (and object (has-async? object))
             (resolve-all ctx [object value]
                          (fn [[obj v]] `(set! (. ~obj ~field) ~v)))
@@ -184,10 +190,16 @@
                         {:unknown-special-form head :form form})))
 
       (and (seq? form) (symbol? head) (= 'await-cps/await (full-name head)))
-      (resolve-all ctx (rest form)
-                  (fn [args] `(~@args (fn [v#] (try (~r v#)
-                                                  (catch Throwable t# (~e t#))))
-                                      (fn [t#] (~e t#)))))
+      (let [cont `(fn [v#]
+                    (let [original-frame# (clojure.lang.Var/getThreadBindingFrame)]
+                      (clojure.lang.Var/resetThreadBindingFrame ~(:thead-binding-frame ctx))
+                      (try
+                        (~r v#)
+                        (catch Throwable t# (~e t#))
+                        (finally
+                          (clojure.lang.Var/resetThreadBindingFrame original-frame#)))))]
+        (resolve-all ctx (rest form)
+                     (fn [args] `(~@args ~cont (fn [t#] (~e t#))))))
 
       (seq? form)
       (resolve-all ctx form (fn [form] `(~r ~(seq form))))
