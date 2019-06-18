@@ -43,15 +43,3 @@
 (defn a-throw [body-gen]
   (gen/fmap (fn [[msg body]] `(throw (ex-info ~msg {:value ~body})))
             (gen/tuple (gen/elements ["ex-a" "ex-b"]) body-gen)))
-
-(defn clojure-code [body-gen]
-  (gen/frequency [[10 (gen/vector body-gen 0 3)]
-                  [10 (gen/set body-gen {:max-elements 3})]
-                  [10 (gen/map body-gen body-gen {:max-elements 3})]
-                  [10 (an-if body-gen)]
-                  [10 (a-do body-gen)]
-                  [10 (a-let body-gen)]
-                  [3 (a-loop body-gen)]
-                  [3 (a-case body-gen)]
-                  [3 (a-throw body-gen)]
-                  [5 (a-try body-gen)]]))

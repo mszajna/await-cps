@@ -58,12 +58,13 @@
        `(~r ~form)
 
         if
-        (let [[con left right] tail ; TODO: compilation error if extra args
+        (let [[con left right & unexpected-others] tail
               cont (gensym "cont")]
           (if (has-async? con)
             (let [ctx' (dissoc ctx :sync-recur?)]
              `(letfn [(~cont [con#] (if con# ~(async* ctx' left)
-                                             ~(async* ctx' right)))]
+                                             ~(async* ctx' right)
+                                             ~@unexpected-others))]
                ~(async* (assoc ctx :r cont) con)))
            `(if ~con ~(async* ctx left) ~(async* ctx right))))
 
@@ -129,15 +130,14 @@
           recur-target
           (resolve-all ctx tail (fn [args] `(~recur-target ~@args)))
 
-          :else (throw (new IllegalStateException "recur outside of loop")))
+          :else (throw (ex-info "Can't recur outside loop" {:form form})))
 
         try
         (let [catch-or-finally? #(and (seq? %) (#{'catch 'finally} (first %)))
               [body cfs] (split-with #(not (catch-or-finally? %)) tail)
-              ; TODO: validate that cfs is strictly catches followed by finally
               [catches finally] (if (->> cfs last first (= 'finally))
-                                  [(map rest (drop-last cfs)) (rest (last cfs))]
-                                  [(map rest cfs)])
+                                  [(drop-last cfs) (rest (last cfs))]
+                                  [cfs])
               fin (gensym "finally")
               finThrow (gensym "finallyThrow")
               cat (gensym "catch")
@@ -151,8 +151,8 @@
                   (~cat [t#]
                     (try
                       (try (throw t#)
-                       ~@(map (fn [[cls bnd & body]]
-                               `(catch ~cls ~bnd
+                       ~@(map (fn [[sym cls bnd & body]]
+                               `(~sym ~cls ~bnd
                                        ~(async* (assoc ctx :r fin :e finThrow)
                                                `(do ~@body))))
                               catches))
@@ -160,8 +160,8 @@
             (try ~(async* (assoc ctx :r fin :e cat) `(do ~@body))
               (catch Throwable t# (~cat t#)))))
 
-        (monitor-enter monitor-exit throw)
-        (resolve-all ctx tail (fn [args] `(~r (~head ~@args))))
+        throw
+        (resolve-all ctx tail (fn [args] `(~r (throw ~@args))))
 
         new
         (let [[cls & args] tail]
@@ -178,18 +178,19 @@
                           `(~r (. ~subject ~method ~@args))))))
 
         set!
-        (let [[subject value] tail
-              [object field] (when (and (seq? subject) (= '. (first subject)))
-                               subject)]  ; TODO: compilation error if extra args
+        (let [[subject & args] tail
+              [_ object & field-args] (when (and (seq? subject)
+                                                 (= '. (first subject)))
+                                        subject)]
           (if (and object (has-async? object))
-            (resolve-all ctx [object value]
-                         (fn [[obj v]] `(set! (. ~obj ~field) ~v)))
-            (resolve-all ctx value (fn [v] `(set! ~subject ~v)))))
+            (resolve-all ctx [object args]
+                         (fn [[object args]] `(~r (set! (. ~object ~@field-args) ~@args))))
+            (resolve-all ctx args (fn [args] `(~r (set! ~subject ~@args))))))
 
         (throw (ex-info (str "Unsupported special symbol [" head "]")
                         {:unknown-special-form head :form form})))
 
-      (and (seq? form) (symbol? head) (= 'await-cps/await (full-name head)))
+      (= 'await-cps/await (full-name head))
       (let [cont `(fn [v#]
                     (let [original-frame# (clojure.lang.Var/getThreadBindingFrame)]
                       (clojure.lang.Var/resetThreadBindingFrame ~(:thead-binding-frame ctx))
@@ -213,5 +214,19 @@
       (map? form)
       (resolve-all ctx (mapcat identity form)
                    (fn [form] `(~r ~(->> form (partition 2) (map vec) (into {})))))
+
       :else (throw (ex-info (str "Unsupported form [" form "]")
                             {:form form})))))
+
+(defn sanitize
+  [form]
+  (when (seq? form)
+    (cond
+      (#{'monitor-enter 'monitor-exit} (first form))
+      (throw (ex-info (str "monitor-enter and monitor-exit are not supported in an async block")
+                      {:form form}))
+
+      (#{`pop-thread-bindings `push-thread-bindings} (full-name (first form)))
+      (throw (ex-info "Thread bindings are not supported in an async block"
+                      {:form form}))))
+  (when (coll? form) (doseq [f form] (sanitize f))))
