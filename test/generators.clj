@@ -8,11 +8,11 @@
             (gen/vector body-gen 2 3)))
 
 (defn a-case [body-gen]
-  (gen/fmap (fn [[exp value cases default]] `(case (do ~exp ~value) ~@(mapcat identity cases) ~@default))
+  (gen/fmap (fn [[exp value cases default]] `(case (do ~exp ~value) ~@(mapcat identity cases) ~default))
             (gen/tuple body-gen
                        (gen/elements [:a :b])
                        (gen/vector-distinct-by first (gen/tuple (gen/elements [:a :b :c]) body-gen) {:max-elements 3})
-                       (gen/vector body-gen 0 1))))
+                       body-gen)))
 
 (defn a-do [body-gen]
   (gen/fmap (fn [f] `(do ~@f))

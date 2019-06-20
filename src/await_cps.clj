@@ -6,7 +6,7 @@
    (e.g. ring, clj-http...)."
   (:refer-clojure :exclude [await defn])
   (:require [clojure.core :as clj]
-            [await-cps.impl :refer [async* sanitize]]))
+            [await-cps.impl :refer [async* sanitize do-alts]]))
 
 (clj/defn await
   "Awaits asynchronous execution of continuation-passing style function f,
@@ -21,7 +21,7 @@
    calling raise with the exception. If the body contains await clauses
    the execution will not block the calling thread."
   [resolve raise & body]
-  (let [body (clojure.walk/macroexpand-all `(do ~@body))
+  (let [; body (clojure.walk/macroexpand-all `(do ~@body))
         r (gensym)
         e (gensym)
         bnds (gensym)]
@@ -30,7 +30,7 @@
           ~e ~raise
           ~bnds (clojure.lang.Var/getThreadBindingFrame)]
       (try
-       ~(async* {:r r :e e :thead-binding-frame bnds} body)
+       ~(async* {:r r :e e :thead-binding-frame bnds} `(do ~@body))
         (catch Throwable t# (~e t#)))
       nil)))
 
@@ -46,3 +46,10 @@
           (if (map? a) [[a] b cs] [nil a bs]))]
    `(clj/defn ~name ~@extras [~@params ~'&resolve ~'&raise]
       (async ~'&resolve ~'&raise ~@body))))
+
+
+(defmacro alts
+  [& alts]
+ `(await do-alts
+         ~@(map (fn [body] `(fn [r# e#] (async r# e# ~body)))
+                alts)))

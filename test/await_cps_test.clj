@@ -8,31 +8,65 @@
             [await-cps.impl :refer [has-async?]]
             [generators :as g]))
 
-(def side-effects (atom nil))
-(def timeout 100)
+(def ^:dynamic side-effects nil)
+(def timeout 200)
 
-(defn run-async [timout form]
-  (reset! side-effects nil)
+(defn ->async [form]
+ `(async ~'respond ~'raise ~form))
+
+(defn run-async* [timout async-form]
   (let [form `(let [result# (promise)
-                    ~@(interpose "undef" g/symbols) "undef"]
-                (async #(deliver result# %) #(deliver result# [:ex (.getMessage ^Exception %)]) ~form)
+                    ~'respond #(deliver result# {:value %})
+                    ~'raise #(deliver result# {:exception %})
+                    ~@(mapcat #(vector % (str "undef-" %)) g/symbols)]
+                ~async-form
                 result#)
-        result (deref (eval form) timeout :timeout)]
-    [@side-effects result]))
+        result (binding [side-effects (atom nil)]
+                  (merge (deref (eval form) timeout {:timeout timeout})
+                         {:side-effects @side-effects}))]
+  (if (:exception result)
+    (try (throw (:exception result))
+      (catch clojure.lang.ExceptionInfo t (assoc result :exception (.getMessage t))))
+    result)))
+
+(defn run-async [timeout form]
+  (run-async* timeout (->async form)))
 
 (defn run-sync [form]
-  (reset! side-effects nil)
   (with-redefs [await #(apply % %&)]
-    (let [result (try (eval `(let [~@(interpose "undef" g/symbols) "undef"] ~form))
-                      (catch clojure.lang.ExceptionInfo t [:ex (.getMessage ^Exception t)]))]
-      [@side-effects result])))
+    (binding [side-effects (atom nil)]
+      (merge
+        (try {:value (eval `(let [~@(mapcat #(vector % (str "undef-" %)) g/symbols)] ~form))}
+          (catch clojure.lang.ExceptionInfo t {:exception (.getMessage t)}))
+        {:side-effects @side-effects}))))
 
-(defn explain [form]
-  (clojure.pprint/pprint
-    {:code form
-     :compiled (clojure.walk/macroexpand-all `(async r e ~form))
-     :sync (try (run-sync form) (catch Throwable t [:exception (.getMessage ^Exception t)]))
-     :async (try (run-async timeout form) (catch Throwable t [:exception (.getMessage ^Exception t)]))}))
+(defn ->results [form]
+  (let [[sync-res sync-error] (try [(run-sync form)] (catch Throwable t [nil t]))]
+    (if sync-error
+      {:code form
+       :sync {:error sync-error}}
+      (let [[compiled compilation-error] (try [(macroexpand (->async form))] (catch Throwable t [nil t]))]
+        (if compiled
+          {:code form
+           :compiled compiled
+           :sync sync-res
+           :async (try (run-async* timeout compiled) (catch Throwable t {:error t}))}
+          {:code form
+           :sync sync-res
+           :async {:error compilation-error}})))))
+
+(defn code-prop [n code-gen predicate]
+  (let [prop (for-all [{:keys [sync async]} 
+                       (->> code-gen
+                            (gen/such-that has-async?)
+                            (gen/fmap ->results)
+                            (gen/such-that #(not (or (instance? VerifyError (:error (:sync %)))
+                                                     (instance? VerifyError (:error (:async %)))))))]
+               (predicate sync async))
+        result (quick-check n prop)]
+    (when (:fail result)
+      (clojure.pprint/pprint (get-in result [:shrunk :smallest])))
+    (not (:fail result))))
 
 (defn effect [s] (swap! side-effects concat [s]))
 
@@ -43,56 +77,128 @@
   ([s v] (effect s) (throw (ex-info (str v) {})))
   ([s v r e] (effect s) (future (e (ex-info (str v) {})))))
 
-(defn fn-arity-1 []
-  (gen/fmap (fn [f] (f (keyword (str "side-effect-" (gensym)))))
-    (gen/elements [(fn [s] `(return ~s)) (fn [s] `(await return ~s))
-                   (fn [s] `(fail ~s)) (fn [s] `(await fail ~s))])))
+(defn successful-async-call [body-gen]
+  (gen/fmap (fn [value] `(await return ~(keyword (gensym)) ~value)) body-gen))
 
-(defn side-effectful-call [body-gen]
-  (gen/fmap (fn [[async? return? value]]
-              `(~@(when async? `[await])
-                ~(if return? `return `fail)
-                ~(keyword (str "side-effect-" (gensym))) ~value))
-            (gen/tuple gen/boolean gen/boolean body-gen)))
+(defn successful-sync-call [body-gen]
+  (gen/fmap (fn [value] `(return ~(keyword (gensym)) ~value)) body-gen))
 
-(defn code-of-reliable-execution-order [body-gen]
-  (gen/frequency [[20 (side-effectful-call body-gen)]
-                  [10 (gen/vector body-gen 0 3)]
-                  [10 (g/an-if body-gen)]
-                  [10 (g/a-do body-gen)]
-                  [10 (g/a-let body-gen)]
-                  [3 (g/a-loop body-gen)]
-                  [3 (g/a-case body-gen)]
-                  [3 (g/a-throw body-gen)]
-                  [5 (g/a-try body-gen)]]))
+(defn failing-async-call [body-gen]
+  (gen/fmap (fn [value] `(await fail ~(keyword (gensym)) ~value)) body-gen))
 
-(def side-effects-and-return-value-are-equivalent
-  (for-all [[code sync-result]
-            (->> (gen/recursive-gen code-of-reliable-execution-order
-                                    (gen/one-of [g/a-symbol (gen/elements [:a :b :c])]))
-                 (gen/fmap (fn [code] [code (try (run-sync code) (catch Throwable t :throws))]))
-                 (gen/such-that (fn [[_ result]] (not= result :throws))))]
-    (let [async-result (run-async timeout code)]
-      (= sync-result async-result))))
+(defn failing-sync-call [body-gen]
+  (gen/fmap (fn [value] `(fail ~(keyword (gensym)) ~value)) body-gen))
 
-(deftest side-effects-and-return-value
-  (let [{:keys [result shrunk]}
-        (quick-check 20 side-effects-and-return-value-are-equivalent)]
-    (when-not (is result "Expect sync and async code to invoke the same side effects and return same value")
-      (explain (:smallest shrunk)))))
+(defn unique [body-gen]
+  (gen/fmap (fn [b] `(do ~b ~(keyword (gensym)))) body-gen))
 
-(deftest maps-and-sets
-  (is (= [#{:a :b} {1 2 3 4}]
-         (update (run-async timeout `{(await return :a 1) 2 (await return :b 3) 4})
-                 0 set)))
-  (is (= [#{:a :b} #{1 2}]
-         (update (run-async timeout `#{(await return :a 1) (await return :b 2)})
-                 0 set))))
+; (defn doesnt-throw-verify-errors? [code]
+;   (try (run-sync code) true (catch VerifyError t false)))
+
+(def code-of-reliable-execution-order
+  (let [wrapper
+        #(gen/frequency [[10 (successful-async-call %)]
+                         [10 (successful-sync-call %)]
+                         [10 (failing-async-call %)]
+                         [10 (failing-sync-call %)]
+                         [10 (g/an-if %)]
+                         [10 (g/a-do %)]
+                         [10 (g/a-let %)]
+                         [3 (g/a-loop %)]
+                         [3 (g/a-case %)]
+                         [3 (g/a-throw %)]
+                         [5 (g/a-try %)]])]
+    (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c])])
+         (gen/recursive-gen wrapper))))
+
+(defn same-side-effects-order-and-equal-return-value [sync-res async-res]
+  (= sync-res async-res))
+
+(deftest code-of-reliable-order
+  (is (code-prop 200
+                 code-of-reliable-execution-order
+                 same-side-effects-order-and-equal-return-value)))
+
+(def successful-code-of-unreliable-execution-order
+  (let [wrapper
+        #(gen/frequency [[10 (successful-async-call %)]
+                         [10 (successful-sync-call %)]
+                         [10 (gen/vector % 0 3)]
+                         [10 (g/an-if %)]
+                         [10 (g/a-do %)]
+                         [10 (g/a-let %)]
+                         [3 (g/a-loop %)]
+                         [3 (g/a-case %)]
+                         [5 (g/a-try %)]])]
+    (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c])])
+         (gen/recursive-gen wrapper))))
+
+(defn out-of-order-side-effects-are-quivalent-and-return-value-equal [sync-res async-res]
+  (= (update sync-res :side-effects set)
+     (update async-res :side-effects set)))
+
+(deftest successful-code-but-unreliable-order
+  (is (code-prop 200
+                 successful-code-of-unreliable-execution-order
+                 out-of-order-side-effects-are-quivalent-and-return-value-equal)))
+
+(def successful-code-of-unreliable-execution-order-including-maps-and-set
+  (let [wrapper
+        #(gen/frequency [[10 (successful-async-call %)]
+                         [10 (successful-sync-call %)]
+                         [10 (gen/vector % 0 3)]
+                         [10 (gen/set (unique %) {:min-elements 0 :max-elements 3})]
+                         [10 (gen/map (unique %) % {:min-elements 0 :max-elements 3})]
+                         [10 (g/an-if %)]
+                         [10 (g/a-do %)]
+                         [10 (g/a-let %)]
+                         [3 (g/a-loop %)]
+                         [3 (g/a-case %)]
+                         [5 (g/a-try %)]])]
+     (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c :d :e])])
+          (gen/recursive-gen wrapper))))
+
+(deftest successful-code-but-unreliable-order-including-maps-and-sets
+  (is (code-prop 200
+                 successful-code-of-unreliable-execution-order-including-maps-and-set
+                 out-of-order-side-effects-are-quivalent-and-return-value-equal)))
+
+(def possibly-usuccessful-code
+  (let [wrapper
+        #(gen/frequency [[10 (successful-async-call %)]
+                         [10 (successful-sync-call %)]
+                         [10 (failing-async-call %)]
+                         [10 (failing-sync-call %)]
+                         [10 (gen/vector % 1 3)]
+                         [10 (gen/set (unique %) {:min-elements 1 :max-elements 3})]
+                         [10 (gen/map (unique %) % {:min-elements 1 :max-elements 3})]
+                         [10 (g/an-if %)]
+                         [10 (g/a-do %)]
+                         [10 (g/a-let %)]
+                         [3 (g/a-loop %)]
+                         [3 (g/a-case %)]
+                         [3 (g/a-throw %)]
+                         [5 (g/a-try %)]])]
+    (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c])])
+         (gen/recursive-gen wrapper))))
+
+(defn either-failure-or-out-of-order-side-effects-are-quivalent-and-return-value-equal [sync-res async-res]
+  (or (and (:exception sync-res) (:exception async-res))
+      (out-of-order-side-effects-are-quivalent-and-return-value-equal sync-res async-res)))
+
+(deftest successful-and-unsuccessful-code
+  (is (code-prop 200
+                 possibly-usuccessful-code
+                 either-failure-or-out-of-order-side-effects-are-quivalent-and-return-value-equal)))
+
+(deftest no-awaits
+  (is (= 1 (:value (run-async timeout `(let [a# 1] a#))))))
 
 (deftest letfn-expression
-  (is (= [nil 2] (run-async timeout `(letfn [(a# [x# r# e#] (future (r# (inc x#))))
-                                             (b# [y# r# e#] (async r# e# (await a# y#)))]
-                                       (await b# 1))))))
+  (is (= 2 (:value (run-async timeout
+                              `(letfn [(a# [x# r# e#] (future (r# (inc x#))))
+                                       (b# [y# r# e#] (async r# e# (await a# y#)))]
+                                 (await b# 1)))))))
 
 (def ^:dynamic dynamic-var :globally-bound)
 
@@ -100,20 +206,20 @@
   (.start (new Thread (reify Runnable (run [_] (r v))))))
 
 (deftest local-bindings
-  (is (= [nil :locally-bound]
+  (is (= :locally-bound
          (binding [dynamic-var :locally-bound]
-           (run-async timeout `(do (await some-async :a) dynamic-var))))))
+           (:value (run-async timeout `(do (await some-async :a) dynamic-var)))))))
 
-(defn value [v r e] (future (r v)))
+(defn value ([v] v) ([v r e] (future (r v))))
 
 (deftest java-interop
-  (is (= [nil 1] (run-async timeout `(Integer. (await value "1")))))
-  (is (= [nil 5] (run-async timeout `(. (await value "works") length))))
-  (is (= [nil 1] (run-async timeout `(Integer/parseInt "1"))))
+  (is (= 1 (:value (run-async timeout `(Integer. (await value "1"))))))
+  (is (= 5 (:value (run-async timeout `(. (await value "works") length)))))
+  (is (= 1 (:value (run-async timeout `(Integer/parseInt "1")))))
 
-  (is (= [nil 8] (run-async timeout `(set! (. (await value (java.awt.Point. 1 2)) -y) 8))))
-  (is (= [nil 8] (run-async timeout `(set! (. (java.awt.Point. 1 2) -y) (await value 8))))))
+  (is (= 8 (:value (run-async timeout `(set! (. (await value (java.awt.Point. 1 2)) -y) 8)))))
+  (is (= 8 (:value (run-async timeout `(set! (. (java.awt.Point. 1 2) -y) (await value 8)))))))
 
 (deftest passthrough-symbols
-  (is (= [nil `value] (run-async timeout `(await value (quote value)))))
-  (is (= [nil #'value] (run-async timeout `(await value (var value))))))
+  (is (= `value (:value (run-async timeout `(await value (quote value))))))
+  (is (= #'value (:value (run-async timeout `(await value (var value)))))))

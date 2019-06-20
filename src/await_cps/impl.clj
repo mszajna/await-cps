@@ -1,5 +1,45 @@
 (ns ^:no-doc await-cps.impl)
 
+(defn do-parallel
+  [async-fns resolve raise]
+  (if (empty? async-fns)
+    (resolve nil)
+    (let [results (atom {})
+          ids (range (count async-fns))]
+      (letfn [(success [id v]
+                (let [res (swap! results #(cond-> % (not (:failed %)) (assoc id v)))]
+                  (when (= (set (keys res)) (set ids))
+                    (try (resolve (mapv res ids))
+                      (catch Throwable t (raise t))))))
+              (fail [id t]
+                (let [res (swap! results #(if (= (set (keys %)) (set ids)) % {:failed id}))]
+                  (when (= (:failed res) id) ; TODO: don't ignore?
+                    (raise t))))]
+        (try
+          (doseq [[asn id] (map vector async-fns (range))]
+            (asn (partial success id) (partial fail id)))
+          (catch Throwable t
+            (let [res (swap! results #(if (= (set (keys %)) ids) % {:failed :sync}))]
+              (when (= (:failed res) :sync) ; TODO: don't ignore?
+                (throw t)))))))))
+
+(defn do-alts
+  [async-fns resolve raise]
+  (when (empty? async-fns) (throw (new IllegalArgumentException "need at least one alternative")))
+  (let [result (promise)]
+    (letfn [(success [id]
+              (^:once fn [v]
+                (deliver result [:success id])
+                (when (= [:success id] @result)
+                  (resolve v))))
+            (fail [id]
+              (^:once fn [v]
+                (deliver result [:failure id])
+                (when (= [:failure id] @result) ; TODO: don't ignore?
+                  (raise v))))]
+      (doseq [[id asn] (interleave async-fns (range))]
+        (asn (success id) (fail id))))))
+
 (defn full-name [sym]
   (when-let [v (and (symbol? sym) (resolve sym))]
     (let [nm (:name (meta v))
@@ -23,7 +63,7 @@
 
 (declare async*)
 
-(defn resolve-all [ctx coll then]
+(defn resolve-sequentially [ctx coll then]
   (let [[syncs [asn & others]] (split-with #(not (has-async? %)) coll)]
     (if asn
       (let [syncs (map #(if (can-inline? %) [%] [(gensym) %]) syncs)
@@ -32,11 +72,24 @@
             cont (gensym "cont")]
        `(let [~@sync-bindings]
           (letfn [(~cont [~async-binding]
-                   ~(resolve-all (dissoc ctx :sync-recur?)
-                                 others
-                                 #(then `[~@(map first syncs) ~async-binding ~@%])))]
+                   ~(resolve-sequentially
+                      (dissoc ctx :sync-recur?) others
+                      #(then `[~@(map first syncs) ~async-binding ~@%])))]
            ~(async* (assoc ctx :r cont) asn))))
       (then coll))))
+
+(defn resolve-concurrently [ctx coll then]
+  (if-not (has-async? coll)
+    (then coll)
+    (let [bound (map #(if (can-inline? %) [%] [(gensym "b") %]) coll)
+          {syncs false asyncs true}
+          (->> bound (filter #(= 2 (count %))) (group-by #(boolean (has-async? (second %)))))
+          cont (gensym "c") r (gensym "r") e (gensym "e")]
+     `(letfn [(~cont [[~@(map first asyncs) [~@(map first syncs)]]] ~(then (map first bound)))]
+        (do-parallel [~@(map (fn [asn] `(fn [~r ~e] ~(async* (assoc ctx :r r :e e)
+                                                             asn))) (map second asyncs))
+                      (fn [~r ~e] (~r ~(mapv second syncs)))]
+                    ~cont ~(:e ctx))))))
 
 (defn async*
   [{:keys [r             ; symbol of continuation function
@@ -128,7 +181,7 @@
           form
 
           recur-target
-          (resolve-all ctx tail (fn [args] `(~recur-target ~@args)))
+          (resolve-sequentially ctx tail (fn [args] `(~recur-target ~@args)))
 
           :else (throw (ex-info "Can't recur outside loop" {:form form})))
 
@@ -138,16 +191,20 @@
               [catches finally] (if (->> cfs last first (= 'finally))
                                   [(drop-last cfs) (rest (last cfs))]
                                   [cfs])
+              fin-do (gensym "fin-do")
               fin (gensym "finally")
               finThrow (gensym "finallyThrow")
               cat (gensym "catch")
               v (gensym)]
-         `(letfn [(~fin [~v]
-                    (future (try ~(async* ctx `(do ~@finally ~v))
+         `(letfn [(~fin-do [~v]
+                    (future (try ~(async* ctx `(do ~@finally (~v)))
                               (catch Throwable t# (~e t#)))))
-                  (~finThrow [~v]
-                    (future (try ~(async* ctx `(do ~@finally (throw ~v)))
-                              (catch Throwable t# (~e t#)))))
+                  (~fin [~v] (~fin-do (constantly ~v)))
+                    ; (future (try ~(async* ctx `(do ~@finally ~v))
+                    ;           (catch Throwable t# (~e t#)))))
+                  (~finThrow [~v] (~fin-do #(throw ~v)))
+                    ; (future (try ~(async* ctx `(do ~@finally (throw ~v)))
+                    ;           (catch Throwable t# (~e t#)))))
                   (~cat [t#]
                     (try
                       (try (throw t#)
@@ -161,21 +218,20 @@
               (catch Throwable t# (~cat t#)))))
 
         throw
-        (resolve-all ctx tail (fn [args] `(~r (throw ~@args))))
+        (resolve-sequentially ctx tail (fn [args] `(~r (throw ~@args))))
 
         new
         (let [[cls & args] tail]
-          (resolve-all ctx args
-                       (fn [args] `(~r (new ~cls ~@args)))))
+          (resolve-sequentially ctx args (fn [args] `(~r (new ~cls ~@args)))))
 
         .
         (let [[subject method & args] tail]
           (if (symbol? subject)
-            (resolve-all ctx args
-                         (fn [args] `(~r (. ~subject ~method ~@args))))
-            (resolve-all ctx `[~subject ~@args]
-                         (fn [[subject & args]]
-                          `(~r (. ~subject ~method ~@args))))))
+            (resolve-sequentially ctx args
+                                  (fn [args] `(~r (. ~subject ~method ~@args))))
+            (resolve-sequentially ctx `[~subject ~@args]
+                                  (fn [[subject & args]]
+                                    `(~r (. ~subject ~method ~@args))))))
 
         set!
         (let [[subject & args] tail
@@ -183,9 +239,10 @@
                                                  (= '. (first subject)))
                                         subject)]
           (if (and object (has-async? object))
-            (resolve-all ctx [object args]
-                         (fn [[object args]] `(~r (set! (. ~object ~@field-args) ~@args))))
-            (resolve-all ctx args (fn [args] `(~r (set! ~subject ~@args))))))
+            (resolve-sequentially ctx [object args]
+              (fn [[object args]] `(~r (set! (. ~object ~@field-args) ~@args))))
+            (resolve-sequentially ctx args
+              (fn [args] `(~r (set! ~subject ~@args))))))
 
         (throw (ex-info (str "Unsupported special symbol [" head "]")
                         {:unknown-special-form head :form form})))
@@ -199,21 +256,21 @@
                         (catch Throwable t# (~e t#))
                         (finally
                           (clojure.lang.Var/resetThreadBindingFrame original-frame#)))))]
-        (resolve-all ctx (rest form)
-                     (fn [args] `(~@args ~cont (fn [t#] (~e t#))))))
+        (resolve-sequentially ctx (rest form)
+          (fn [args] `(~@args ~cont (fn [t#] (~e t#))))))
 
       (seq? form)
-      (resolve-all ctx form (fn [form] `(~r ~(seq form))))
+      (resolve-sequentially ctx form (fn [form] `(~r ~(seq form))))
 
       (vector? form)
-      (resolve-all ctx form (fn [form] `(~r ~(vec form))))
+      (resolve-concurrently ctx form (fn [form] `(~r ~(vec form))))
 
       (set? form)
-      (resolve-all ctx form (fn [form] `(~r ~(set form))))
+      (resolve-concurrently ctx form (fn [form] `(~r ~(set form))))
 
       (map? form)
-      (resolve-all ctx (mapcat identity form)
-                   (fn [form] `(~r ~(->> form (partition 2) (map vec) (into {})))))
+      (resolve-concurrently ctx (mapcat identity form)
+        (fn [form] `(~r ~(->> form (partition 2) (map vec) (into {})))))
 
       :else (throw (ex-info (str "Unsupported form [" form "]")
                             {:form form})))))

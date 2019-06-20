@@ -39,9 +39,23 @@ or with custom `defn`
 (swapi-handler {:params {:id 1}} println println)
 ```
 
+```clojure
+(cps/defn swapi-handler [request]
+  (let [person-url (str "https://swapi.co/api/people/" (:id (:params request)))
+        person (:body (cps/await :timeout 1000
+                                 http/get person-url {:async? true :as :json}))
+        [mirror result] (cps/alts (await cps/ms 100 [:timeout])
+                                  [:mirror1 (await http/get "http://mirror1/")]
+                                  [:mirror2 (await http/get "http://mirror2")])
+        [a b] (cps/all (await a) (+ 1 (await b)))]))
+
+```
+
 ## TODO
 
 - presereve meta
 - test loop/recur for stack overflows
 - primitives for concurrency and timeouts
-- reconsider the API (would be nice for cps/defn to include work async)
+- reconsider the API (would be nice for cps/defn to include the word async)
+- ensure only one of the handlers will be called and only once even when async functions are buggy
+- test parallel stuff
