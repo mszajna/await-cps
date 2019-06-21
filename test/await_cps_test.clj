@@ -55,13 +55,16 @@
            :sync sync-res
            :async {:error compilation-error}})))))
 
+(defn verify-error? [results] ; For some reason try and loops exporessions mixed together throw these a lot
+  (or (instance? VerifyError (:error (:sync results)))
+      (instance? VerifyError (:error (:async results)))))
+
 (defn code-prop [n code-gen predicate]
   (let [prop (for-all [{:keys [sync async]} 
                        (->> code-gen
                             (gen/such-that has-async?)
                             (gen/fmap ->results)
-                            (gen/such-that #(not (or (instance? VerifyError (:error (:sync %)))
-                                                     (instance? VerifyError (:error (:async %)))))))]
+                            (gen/such-that #(not (verify-error? %))))]
                (predicate sync async))
         result (quick-check n prop)]
     (when (:fail result)
@@ -91,9 +94,6 @@
 
 (defn unique [body-gen]
   (gen/fmap (fn [b] `(do ~b ~(keyword (gensym)))) body-gen))
-
-; (defn doesnt-throw-verify-errors? [code]
-;   (try (run-sync code) true (catch VerifyError t false)))
 
 (def code-of-reliable-execution-order
   (let [wrapper
@@ -134,8 +134,8 @@
          (gen/recursive-gen wrapper))))
 
 (defn out-of-order-side-effects-are-quivalent-and-return-value-equal [sync-res async-res]
-  (= (update sync-res :side-effects set)
-     (update async-res :side-effects set)))
+  (= (update sync-res :side-effects sort)
+     (update async-res :side-effects sort)))
 
 (deftest successful-code-but-unreliable-order
   (is (code-prop 200
