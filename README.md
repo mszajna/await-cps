@@ -53,9 +53,9 @@ or with custom `defn`
 
 ## TODO
 
+- define and test what happens when respond or raise throws itself
+- ensure only one of the handlers will be called and only once even when async functions are buggy
 - presereve meta
 - test loop/recur for stack overflows
-- primitives for concurrency and timeouts
 - reconsider the API (would be nice for cps/defn to include the word async)
-- ensure only one of the handlers will be called and only once even when async functions are buggy
-- test parallel stuff
+- primitives for concurrency and timeouts (maybe tangent?)
