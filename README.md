@@ -26,10 +26,10 @@ functions that take resolve and raise callbacks as the last parameters
 or with custom `defn`
 
 ```clojure
-(require '[await-cps :as cps]
+(require '[await-cps :refer cps]
          '[clj-http.client :as http])
 
-(cps/defn swapi-handler [request]
+(cps/defn-async swapi-handler [request]
   (let [person-url (str "https://swapi.co/api/people/" (:id (:params request)))
         person (:body (cps/await http/get person-url {:async? true :as :json}))
         homeworld-url (:homeworld person)
@@ -39,23 +39,9 @@ or with custom `defn`
 (swapi-handler {:params {:id 1}} println println)
 ```
 
-```clojure
-(cps/defn swapi-handler [request]
-  (let [person-url (str "https://swapi.co/api/people/" (:id (:params request)))
-        person (:body (cps/await :timeout 1000
-                                 http/get person-url {:async? true :as :json}))
-        [mirror result] (cps/alts (await cps/ms 100 [:timeout])
-                                  [:mirror1 (await http/get "http://mirror1/")]
-                                  [:mirror2 (await http/get "http://mirror2")])
-        [a b] (cps/all (await a) (+ 1 (await b)))]))
-
-```
-
 ## TODO
 
-- define and test what happens when respond or raise throws itself
-- ensure only one of the handlers will be called and only once even when async functions are buggy
 - presereve meta
 - test loop/recur for stack overflows
-- reconsider the API (would be nice for cps/defn to include the word async)
-- primitives for concurrency and timeouts (maybe tangent?)
+- recursive fn-async
+- sanitise monitor-*

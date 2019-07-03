@@ -22,7 +22,7 @@
       ; but inlining vectors is fine
       (and (vector? form) (every? can-inline? form))))
 
-(declare async*)
+(declare invert)
 
 (defn resolve-sequentially [ctx coll then]
   (let [[syncs [asn & others]] (split-with #(not (has-terminal-symbols? % ctx)) coll)]
@@ -36,12 +36,12 @@
                    ~(resolve-sequentially
                       (dissoc ctx :sync-recur?) others
                       #(then `[~@(map first syncs) ~async-binding ~@%])))]
-           ~(async* (assoc ctx :r cont) asn))))
+           ~(invert (assoc ctx :r cont) asn))))
       (then coll))))
 
-(defn async*
-  [{:keys [r             ; symbol of continuation function
-           e             ; symbol of error handling function
+(defn invert
+  [{:keys [r             ; symbol of continuation function (resolve)
+           e             ; symbol of error handling function (raise)
            sync-recur?   ; indicates when synchronous recur is possible
            recur-target  ; symbol of asynchronous recur function if any
            terminal-symbols]
@@ -64,17 +64,17 @@
               cont (gensym "cont")]
           (if (has-terminal-symbols? con ctx)
             (let [ctx' (dissoc ctx :sync-recur?)]
-             `(letfn [(~cont [con#] (if con# ~(async* ctx' left)
-                                             ~(async* ctx' right)
+             `(letfn [(~cont [con#] (if con# ~(invert ctx' left)
+                                             ~(invert ctx' right)
                                              ~@unexpected-others))]
-               ~(async* (assoc ctx :r cont) con)))
-           `(if ~con ~(async* ctx left) ~(async* ctx right))))
+               ~(invert (assoc ctx :r cont) con)))
+           `(if ~con ~(invert ctx left) ~(invert ctx right))))
 
         case*
         (let [[ge shift mask default imap & args] tail
-              imap (reduce-kv #(assoc %1 %2 (update %3 1 (fn [v] (async* ctx v))))
+              imap (reduce-kv #(assoc %1 %2 (update %3 1 (fn [v] (invert ctx v))))
                               {} imap)]
-          `(case* ~ge ~shift ~mask ~(async* ctx default) ~imap ~@args))
+          `(case* ~ge ~shift ~mask ~(invert ctx default) ~imap ~@args))
 
         let*
         (let [[syncs [[sym asn] & others]] (->> tail first (partition 2)
@@ -83,14 +83,14 @@
          `(let* [~@(mapcat identity syncs)]
            ~(if asn
              `(letfn [(~cont [~sym]
-                       ~(async* (dissoc ctx :sync-recur?)
+                       ~(invert (dissoc ctx :sync-recur?)
                                `(let* [~@(mapcat identity others)]
                                   ~@(rest tail))))]
-               ~(async* (assoc ctx :r cont) asn))
-              (async* ctx `(do ~@(rest tail))))))
+               ~(invert (assoc ctx :r cont) asn))
+              (invert ctx `(do ~@(rest tail))))))
 
         letfn*
-       `(letfn* ~(first tail) ~(async* ctx `(do ~@(rest tail))))
+       `(letfn* ~(first tail) ~(invert ctx `(do ~@(rest tail))))
 
         do
         (let [[syncs [asn & others]] (split-with #(not (has-terminal-symbols? % ctx)) tail)
@@ -98,10 +98,10 @@
           (if asn
            `(do ~@syncs
                 ~(if others
-                  `(letfn [(~cont [_#] ~(async* (dissoc ctx :sync-recur?)
+                  `(letfn [(~cont [_#] ~(invert (dissoc ctx :sync-recur?)
                                                `(do ~@others)))]
-                    ~(async* (assoc ctx :r cont) asn))
-                   (async* ctx asn)))
+                    ~(invert (assoc ctx :r cont) asn))
+                   (invert ctx asn)))
            `(~r ~form)))
 
         loop*
@@ -109,7 +109,7 @@
               bind-names (->> binds (partition 2) (map first))]
           (cond
             (has-terminal-symbols? binds ctx)
-            (async* ctx `(let [~@binds]
+            (invert ctx `(let [~@binds]
                            (loop [~@(interleave bind-names bind-names)]
                             ~@body)))
 
@@ -117,7 +117,7 @@
             (let [recur-target (gensym "recur")]
              `(letfn [(~recur-target [~@bind-names]
                         (loop [~@(interleave bind-names bind-names)]
-                         ~(async* (assoc ctx :sync-recur? true
+                         ~(invert (assoc ctx :sync-recur? true
                                              :recur-target recur-target)
                                  `(do ~@body))))]
                 (let [~@binds] (~recur-target ~@bind-names))))
@@ -146,29 +146,20 @@
               cat (gensym "catch")
               v (gensym)]
          `(letfn [(~fin-do [~v]
-                    (try ~(async* ctx `(do ~@finally (~v)))
+                    (try ~(invert ctx `(do ~@finally (~v)))
                       (catch Throwable t# (~e t#))))
-                    ; TODO: Consider wrapping in a future to switch out to a new context.
-                    ; It seems to work fine anyway so far but immediate continuations (fn [r e] (r value))
-                    ; together with some exceptions could have unforseen consequences
-                    ; (future (try ~(async* ctx `(do ~@finally (~v)))
-                    ;           (catch Throwable t# (~e t#)))))
                   (~fin [v#] (~fin-do (constantly v#)))
-                    ; (future (try ~(async* ctx `(do ~@finally ~v))
-                    ;           (catch Throwable t# (~e t#)))))
                   (~finThrow [t#] (~fin-do #(throw t#)))
-                    ; (future (try ~(async* ctx `(do ~@finally (throw ~v)))
-                    ;           (catch Throwable t# (~e t#)))))
                   (~cat [t#]
                     (try
                       (try (throw t#)
                        ~@(map (fn [[sym cls bnd & body]]
                                `(~sym ~cls ~bnd
-                                       ~(async* (assoc ctx :r fin :e finThrow)
+                                       ~(invert (assoc ctx :r fin :e finThrow)
                                                `(do ~@body))))
                               catches))
                       (catch Throwable t# (~finThrow t#))))]
-            (try ~(async* (assoc ctx :r fin :e cat) `(do ~@body))
+            (try ~(invert (assoc ctx :r fin :e cat) `(do ~@body))
               (catch Throwable t# (~cat t#)))))
 
         throw
@@ -220,16 +211,3 @@
 
       :else (throw (ex-info (str "Unsupported form [" form "]")
                             {:form form})))))
-
-; (defn sanitize
-;   [form]
-;   (when (seq? form)
-;     (cond
-;       (#{'monitor-enter 'monitor-exit} (first form))
-;       (throw (ex-info (str "monitor-enter and monitor-exit are not supported in an async block")
-;                       {:form form}))
-
-;       (#{`pop-thread-bindings `push-thread-bindings} (full-name (first form)))
-;       (throw (ex-info "Thread bindings are not supported in an async block"
-;                       {:form form}))))
-;   (when (coll? form) (doseq [f form] (sanitize f))))

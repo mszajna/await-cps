@@ -52,7 +52,7 @@
                 ~async-form
                 result#)
         result (binding [side-effects (atom nil)]
-                  (merge ((->async-fn timeout async-form)) ; (deref (eval form) timeout {:timeout timeout})
+                  (merge ((->async-fn timeout async-form))
                          {:side-effects @side-effects}))]
   (if (:exception result)
     (try (throw (:exception result))
@@ -68,8 +68,6 @@
     (binding [side-effects (atom nil)]
       (merge
         ((->sync-fn form))
-        ; (try {:value ((->sync-fn form))} ; (eval `(let [~@(mapcat #(vector % (str "undef-" %)) g/symbols)] ~form))}
-        ;   (catch clojure.lang.ExceptionInfo t {:exception (.getMessage t)}))
         {:side-effects @side-effects}))))
 
 (defn ->results [form]
@@ -111,22 +109,8 @@
   ([s v] (effect s) (throw (ex-info (str v) {})))
   ([s v r e] (effect s) (future (e (ex-info (str v) {})))))
 
-; (defn successful-async-call [body-gen]
-;   (gen/fmap (fn [value] `(await return ~(keyword (gensym)) ~value)) body-gen))
-
-; (defn successful-sync-call [body-gen]
-;   (gen/fmap (fn [value] `(return ~(keyword (gensym)) ~value)) body-gen))
-
-; (defn failing-async-call [body-gen]
-;   (gen/fmap (fn [value] `(await fail ~(keyword (gensym)) ~value)) body-gen))
-
-; (defn failing-sync-call [body-gen]
-;   (gen/fmap (fn [value] `(fail ~(keyword (gensym)) ~value)) body-gen))
-
 (defn unique [body-gen]
   (gen/fmap (fn [b] `(do ~b ~(keyword (gensym)))) body-gen))
-
-;; new function primitives
 
 (defn sync-return [s v]
   (effect s)
@@ -210,82 +194,10 @@
 (defn same-side-effects-order-and-equal-return-value [sync-res async-res]
   (= sync-res async-res))
 
-(deftest code-of-reliable-order
-  (is (code-prop 200
+(deftest test-code-of-reliable-execution-order
+  (is (code-prop 2000
                  code-of-reliable-execution-order
                  same-side-effects-order-and-equal-return-value)))
-
-; (def successful-code-of-unreliable-execution-order
-;   (let [wrapper
-;         #(gen/frequency [[10 (successful-async-call %)]
-;                         [10 (successful-sync-call %)]
-;                         [10 (gen/vector % 0 3)]
-;                         [10 (g/an-if %)]
-;                         [10 (g/a-do %)]
-;                         [10 (g/a-let %)]
-;                         [3 (g/a-loop %)]
-;                         [3 (g/a-case %)]
-;                         [5 (g/a-try %)]])]
-;     (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c])])
-;         (gen/recursive-gen wrapper))))
-
-; (defn out-of-order-side-effects-are-quivalent-and-return-value-equal [sync-res async-res]
-;   (= (update sync-res :side-effects set)
-;     (update async-res :side-effects set)))
-
-; (deftest successful-code-but-unreliable-order
-;   (is (code-prop 200
-;                 successful-code-of-unreliable-execution-order
-;                 out-of-order-side-effects-are-quivalent-and-return-value-equal)))
-
-; (def successful-code-of-unreliable-execution-order-including-maps-and-set
-;   (let [wrapper
-;         #(gen/frequency [[10 (successful-async-call %)]
-;                         [10 (successful-sync-call %)]
-;                         [10 (gen/vector % 0 3)]
-;                         [10 (gen/set (unique %) {:min-elements 0 :max-elements 3})]
-;                         [10 (gen/map (unique %) % {:min-elements 0 :max-elements 3})]
-;                         [10 (g/an-if %)]
-;                         [10 (g/a-do %)]
-;                         [10 (g/a-let %)]
-;                         [3 (g/a-loop %)]
-;                         [3 (g/a-case %)]
-;                         [5 (g/a-try %)]])]
-;     (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c :d :e])])
-;           (gen/recursive-gen wrapper))))
-
-; (deftest successful-code-but-unreliable-order-including-maps-and-sets
-;   (is (code-prop 200
-;                 successful-code-of-unreliable-execution-order-including-maps-and-set
-;                 out-of-order-side-effects-are-quivalent-and-return-value-equal)))
-
-; (def possibly-usuccessful-code
-;   (let [wrapper
-;         #(gen/frequency [[10 (successful-async-call %)]
-;                         [10 (successful-sync-call %)]
-;                         [10 (failing-async-call %)]
-;                         [10 (failing-sync-call %)]
-;                         [10 (gen/vector % 1 3)]
-;                         [10 (gen/set (unique %) {:min-elements 1 :max-elements 3})]
-;                         [10 (gen/map (unique %) % {:min-elements 1 :max-elements 3})]
-;                         [10 (g/an-if %)]
-;                         [10 (g/a-do %)]
-;                         [10 (g/a-let %)]
-;                         [3 (g/a-loop %)]
-;                         [3 (g/a-case %)]
-;                         [3 (g/a-throw %)]
-;                         [5 (g/a-try %)]])]
-;     (->> (gen/one-of [g/a-symbol (gen/elements [:a :b :c])])
-;         (gen/recursive-gen wrapper))))
-
-; (defn either-failure-or-out-of-order-side-effects-are-quivalent-and-return-value-equal [sync-res async-res]
-;   (or (and (:exception sync-res) (:exception async-res))
-;       (out-of-order-side-effects-are-quivalent-and-return-value-equal sync-res async-res)))
-
-; (deftest successful-and-unsuccessful-code
-;   (is (code-prop 200
-;                 possibly-usuccessful-code
-;                 either-failure-or-out-of-order-side-effects-are-quivalent-and-return-value-equal)))
 
 (deftest no-awaits
   (is (= 1 (:value (run-async timeout `(let [a# 1] a#))))))
