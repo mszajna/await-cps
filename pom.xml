@@ -6,7 +6,7 @@
   <version>0.1.2</version>
   <name>await-cps</name>
   <url>https://github.com/mszajna/await-cps</url>
-  <description>async/await for continuation-passing style (CPS) functions</description>
+  <description>async/await for continuation-passing style functions</description>
   <dependencies>
     <dependency>
       <groupId>org.clojure</groupId>

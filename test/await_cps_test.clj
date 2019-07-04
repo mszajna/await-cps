@@ -6,7 +6,7 @@
             [clojure.test.check.properties :refer [for-all]]
             [await-cps :refer [async await]]
             [await-cps.ioc :refer [has-terminal-symbols?]]
-            [generators :as g]))
+            [await-cps.generators :as g]))
 
 (def ^:dynamic side-effects nil)
 (def timeout 200)

@@ -1,4 +1,4 @@
-(ns generators
+(ns await-cps.generators
   (:require [clojure.test.check.generators :as gen]))
 
 (defn ->bool [v] (zero? (mod (hash v) 2)))
