@@ -4,7 +4,7 @@
             [clojure.test.check :refer [quick-check]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :refer [for-all]]
-            [await-cps :refer [async await]]
+            [await-cps :refer [async await fn-async defn-async with-new-call-stack]]
             [await-cps.ioc :refer [has-terminal-symbols?]]
             [await-cps.generators :as g]))
 
@@ -41,10 +41,7 @@
         ~async-form
         (deref result# ~timeout {:timeout timeout})))))
 
-(defn run-async* [timout async-form]
-  ; (let [result (binding [side-effects (atom nil)]
-  ;               (merge (deref-async async-form timout)
-  ;                     {:side-effects @side-effects}))
+(defn run-async* [timeout async-form]
   (let [form `(let [result# (promise)
                     ~'respond #(deliver result# {:value %})
                     ~'raise #(deliver result# {:exception %})
@@ -233,6 +230,12 @@
 (deftest passthrough-symbols
   (is (= `value (:value (run-async timeout `(await value (quote value))))))
   (is (= #'value (:value (run-async timeout `(await value (var value)))))))
+
+(deftest test-fn-async
+  (is (= 1 (:value (run-async timeout `(await (fn-async [] (await value 1)))))))
+  (is (= 0 (:value (run-async timeout `(await (fn-async [a#] (if (> a# 0) (recur (dec a#)) a#)) 10000)))))
+  (is (= 0 (:value (run-async (* 10 timeout) `(await (fn-async [a#] (if (> a# 0) (recur (await value (dec a#))) a#)) 10000)))))
+  (is (= 0 (:value (run-async (* 10 timeout) `(await (fn-async [a#] (if (> a# 0) (recur (await (with-new-call-stack async-return-immediate) nil (dec a#))) a#)) 10000))))))
 
 (defn benchmark [n]
   (let [{:keys [code compiled]} (gen/generate (->results-gen code-of-reliable-execution-order) 200)

@@ -65,25 +65,15 @@ Use `loop/recur` to traverse collections.
       (recur xs))))
 ```
 
-### loop/recur
+### Recurring
 
-Recurring is supported in the context of a loop (not yet in the context of a function).
+Recurring is supported in the context of a `loop`, `fn-async` and `defn-async`.
 
-```clojure
-(async resolve raise
-  (loop [offset 0]
-    (println (:body (await http/get (str "https://google.com/search?q=clojure&start=" offset) {:async? true})))
-    (recur (+ 10 offset))))
-```
-
-When awaiting in a loop and awaited function invokes the continuation in
-the calling thread the call stack will keep growing until overflow. This could
-be a problem for libraries that take the CPS as an argument and can't make
-runtime assumptions about it. A workaround could be wrapping callbacks in a future.
-
-```clojure
-(await (fn [resolve raise] (arbitrary-cps-fn args* #(future (resolve %)) #(future (raise %)))))
-```
+When awaited function invokes continuation in the calling thread the call
+stack may keep growing until overflow. This is most problematic for code that
+can't make assumptions about runtime properties of the function awaited.
+You can wrap it in `with-new-call-stack` to avoid the issue at the penalty
+of extra time taken to schedule a task each loop.
 
 ### try/catch/finally
 

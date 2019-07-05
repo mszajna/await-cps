@@ -19,6 +19,16 @@
                            ((sel c) v)))))]
     [(call first) (call second)]))
 
+(defn with-new-call-stack
+  "Wraps an asynchronous function making sure resolve and raise callbacks
+   execute in a separate thread. This may be useful to avoid StackOverflowError
+   in long loops when awaited function invokes the callback in the calling thread."
+  [async-fn]
+  (fn [& args]
+    (let [[args [resolve raise]] (split-at (-> (count args) (- 2)) args)]
+      (apply async-fn (concat args [#(future (resolve %))
+                                    #(future (raise %))])))))
+
 (defmacro ^:no-doc with-binding-frame [frame & body]
  `(let [original-frame# (clojure.lang.Var/getThreadBindingFrame)]
     (clojure.lang.Var/resetThreadBindingFrame ~frame)
@@ -88,9 +98,10 @@
   (let [[a & [b & cs :as bs]] args
         [extras params body]
         (if (symbol? a)
-          [[a] b cs] [nil a bs])]
-   `(fn ~name [~@params ~'&resolve ~'&raise]
-      (async ~'&resolve ~'&raise ~@body))))
+          [[a] b cs] [nil a bs])
+        recur-target (gensym)]
+   `(fn ~@extras [~@params ~'&resolve ~'&raise]
+      (async ~'&resolve ~'&raise (loop [~@(interleave params params)] ~@body)))))
 
 (defmacro defn-async
   "Same as defn but adds &resolve and &raise params and executes the body
@@ -101,6 +112,7 @@
         [extras params body]
         (if (string? a)
           (if (map? b) [[a b] c ds] [[a] b cs])
-          (if (map? a) [[a] b cs] [nil a bs]))]
-  `(defn ~name ~@extras [~@params ~'&resolve ~'&raise]
-      (async ~'&resolve ~'&raise ~@body))))
+          (if (map? a) [[a] b cs] [nil a bs]))
+        recur-target (gensym)]
+   `(defn ~name ~@extras [~@params ~'&resolve ~'&raise]
+      (async ~'&resolve ~'&raise (loop [~@(interleave params params)] ~@body)))))
