@@ -41,20 +41,42 @@ You can also use `defn-async` to reduce boilerplate.
    ...)
 ```
 
-Async block can handle arbitrary Clojure code with following limitations:
+Async block can handle arbitrary Clojure code with following notes:
+
+### async boundary
+
+The boundary of async block does not stretch inside the body of any nested
+function defined within.
+
+```clojure
+(async resolve raise
+  (doall (map (fn [url] (await http/get url {:async true}))
+              ["https://google.com" "https://twitter.com"])))
+=> IllegalStateException await called outside async block
+```
+
+Use `loop/recur` to traverse collections.
+
+```clojure
+(async resolve raise
+  (loop [[x & xs] ["https://google.com" "https://twitter.com"]]
+    (when x
+      (println (await http/get x {:async? true}))
+      (recur xs))))
+```
 
 ### loop/recur
 
 Recurring is supported in the context of a loop (not yet in the context of a function).
 
 ```clojure
-(async respond raise
+(async resolve raise
   (loop [offset 0]
     (println (:body (await http/get (str "https://google.com/search?q=clojure&start=" offset) {:async? true})))
     (recur (+ 10 offset))))
 ```
 
-When awaiting in a loop if awaited function invokes the continuation in
+When awaiting in a loop and awaited function invokes the continuation in
 the calling thread the call stack will keep growing until overflow. This could
 be a problem for libraries that take the CPS as an argument and can't make
 runtime assumptions about it. A workaround could be wrapping callbacks in a future.
@@ -73,11 +95,30 @@ that's executing a regular `try` block.
 
 ### Monitor operations
 
-`monitor-enter` and `monitor-exit` are strictly related to executing thread and
-therefore are not supported.
+`monitor-enter` and `monitor-exit` are strictly related to the executing thread
+and therefore are not supported.
 
-## TODO
+Currently there is no warning when monitor-* is used inside async which
+may lead to hard-to-spot concurrency bugs.
 
-- presereve meta
-- recursive fn-async
-- warn on monitor-*
+### Meta
+
+Metadata of forms containing `await` expressions is currently lost in translation.
+
+## Does it work?
+
+Being cautious about a library applying chainsaw surgery to your production
+code is only fair. The goal of this library is for you to be able to use it
+with confidence.
+
+The test suite included employs generative testing producing nested combinations
+of expressions including special forms, synchronous and asynchronous function
+calls. It asserts that both the result (value returned or exception thrown) and
+the order of any side effects is consistent with what you'd observe with
+regular, synchronous evaluation.
+
+At the same time, the project has not seen extensive production use yet.
+
+## License
+
+This project is distributed under [The MIT License](https://github.com/mszajna/await-cps/blob/master/LICENSE).
