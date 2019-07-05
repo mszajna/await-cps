@@ -220,8 +220,8 @@
 (defn value ([v] v) ([v r e] (future (r v))))
 
 (deftest java-interop
-  (is (= 1 (:value (run-async timeout `(Integer. (await value "1"))))))
-  (is (= 5 (:value (run-async timeout `(. (await value "works") length)))))
+  (is (= 1 (:value (run-async timeout `(Integer. ^String (await value "1"))))))
+  (is (= 5 (:value (run-async timeout `(. ^String (await value "works") length)))))
   (is (= 1 (:value (run-async timeout `(Integer/parseInt "1")))))
 
   (is (= 8 (:value (run-async timeout `(set! (. (await value (java.awt.Point. 1 2)) -y) 8)))))

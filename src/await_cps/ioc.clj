@@ -29,7 +29,7 @@
     (if asn
       (let [syncs (map #(if (can-inline? %) [%] [(gensym) %]) syncs)
             sync-bindings (->> syncs (filter second) (mapcat identity))
-            async-binding (gensym)
+            async-binding (with-meta (gensym) (meta asn))
             cont (gensym "cont")]
        `(let [~@sync-bindings]
           (letfn [(~cont [~async-binding]
@@ -200,14 +200,14 @@
       (resolve-sequentially ctx form (fn [form] `(~r ~(seq form))))
 
       (vector? form)
-      (resolve-sequentially ctx form (fn [form] `(~r ~(vec form))))
+      (resolve-sequentially ctx form (fn [form] `(~r ~(with-meta (vec form) (meta form)))))
 
       (set? form)
-      (resolve-sequentially ctx form (fn [form] `(~r ~(set form))))
+      (resolve-sequentially ctx form (fn [form] `(~r ~(with-meta (set form) (meta form)))))
 
       (map? form)
       (resolve-sequentially ctx (mapcat identity form)
-        (fn [form] `(~r ~(->> form (partition 2) (map vec) (into {})))))
+        (fn [form] `(~r ~(with-meta (->> form (partition 2) (map vec) (into {})) (meta form)))))
 
       :else (throw (ex-info (str "Unsupported form [" form "]")
                             {:form form})))))

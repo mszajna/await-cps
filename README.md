@@ -91,10 +91,6 @@ and therefore are not supported.
 Currently there is no warning when monitor-* is used inside async which
 may lead to hard-to-spot concurrency bugs.
 
-### Meta
-
-Metadata of forms containing `await` expressions is currently lost in translation.
-
 ## Does it work?
 
 Being cautious about a library applying chainsaw surgery to your production
