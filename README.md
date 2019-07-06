@@ -43,10 +43,19 @@ You can also use `defn-async` to reduce boilerplate.
 
 Async block can handle arbitrary Clojure code with following notes:
 
+### await
+
+You can `await` any function that takes `resolve` and `raise` callbacks as
+the last two parameters. The execution does not block the calling thread,
+it is resumed in whatever thread the awaited function invokes the callback.
+The value passed to `resolve` is returned or the `Throwable` passed to `raise`
+is thrown.
+
 ### async boundary
 
-The boundary of async block does not stretch inside the body of any nested
-function defined within.
+The boundary of async block does not stretch inside nested `def`s nor the body
+of any nested function. This includes `def`, `fn`, `reify`, `deftype` and
+functions in `letfn`. The code below does *not* work:
 
 ```clojure
 (async resolve raise
