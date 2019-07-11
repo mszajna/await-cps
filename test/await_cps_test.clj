@@ -4,7 +4,7 @@
             [clojure.test.check :refer [quick-check]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :refer [for-all]]
-            [await-cps :refer [async await fn-async defn-async with-new-call-stack]]
+            [await-cps :refer [async await fn-async defn-async]]
             [await-cps.ioc :refer [has-terminal-symbols?]]
             [await-cps.generators :as g]))
 
@@ -233,9 +233,19 @@
 
 (deftest test-fn-async
   (is (= 1 (:value (run-async timeout `(await (fn-async [] (await value 1)))))))
-  (is (= 0 (:value (run-async timeout `(await (fn-async [a#] (if (> a# 0) (recur (dec a#)) a#)) 10000)))))
-  (is (= 0 (:value (run-async (* 10 timeout) `(await (fn-async [a#] (if (> a# 0) (recur (await value (dec a#))) a#)) 10000)))))
-  (is (= 0 (:value (run-async (* 10 timeout) `(await (fn-async [a#] (if (> a# 0) (recur (await (with-new-call-stack async-return-immediate) nil (dec a#))) a#)) 10000))))))
+  (is (= 0 (:value (run-async timeout `(await (fn-async [a#]
+                                                (if (> a# 0)
+                                                    (recur (await async-return-immediate nil (dec a#))) a#))
+                                              10000))))))
+
+(deftest test-loop
+  (is (= 0 (:value (run-async timeout `(loop [a# 10000] (if (> a# 0) (recur (dec a#)) a#))))))
+  (is (= 0 (:value (run-async (* 10 timeout) `(loop [a# 10000] (if (> a# 0) (recur (await value (dec a#))) a#))))))
+  (is (= 0 (:value (run-async timeout `(loop [a# 100000] (if (> a# 0) (recur (await async-return-immediate nil (dec a#))) a#))))))
+  (is (= 0 (:value (run-async (* 10 timeout)
+                              `(loop [a# 10000]
+                                (await async-return-future nil nil)
+                                (if (> a# 0) (recur (await async-return-immediate nil (dec a#))) a#)))))))
 
 (defn benchmark [n]
   (let [{:keys [code compiled]} (gen/generate (->results-gen code-of-reliable-execution-order) 200)

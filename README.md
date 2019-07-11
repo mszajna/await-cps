@@ -102,13 +102,8 @@ You can also use `fn-async` for ad-hoc asynchronous functions.
 
 ### Recurring
 
-Recurring is supported in the context of a `loop`, `fn-async` and `defn-async`.
-
-When awaited function invokes continuation in the calling thread (synchronously)
-the call stack may keep growing until overflow. This is most problematic for
-code that can't make assumptions about runtime properties of the function awaited.
-You can wrap it in `with-new-call-stack` to avoid the issue at the penalty
-of extra time taken to schedule a task each loop.
+Recurring is supported in the context of `fn-async`, `defn-async` and `loop`
+within `async` block.
 
 ### try/catch/finally
 

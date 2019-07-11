@@ -7,10 +7,7 @@
   (:refer-clojure :exclude [await])
   (:require [await-cps.ioc :refer [invert]]))
 
-(defn run-once
-  "Wraps the functions provided so that only one will ever be invoked and
-   at most once. Guarantees the release of closed-over references after
-   the first call of either."
+(defn ^:no-doc run-once
   [resolve raise]
   (let [ctx (atom [resolve raise])
         call (fn [sel]
@@ -18,16 +15,6 @@
                          (when (zero? (swap! ctx #(if (vector? %) 0 (inc %))))
                            ((sel c) v)))))]
     [(call first) (call second)]))
-
-(defn with-new-call-stack
-  "Wraps an asynchronous function making sure resolve and raise callbacks
-   execute in a separate thread. This may be useful to avoid StackOverflowError
-   in long loops when awaited function invokes the callback in the calling thread."
-  [async-fn]
-  (fn [& args]
-    (let [[args [resolve raise]] (split-at (-> (count args) (- 2)) args)]
-      (apply async-fn (concat args [#(future (resolve %))
-                                    #(future (raise %))])))))
 
 (defmacro ^:no-doc with-binding-frame [frame & body]
  `(let [original-frame# (clojure.lang.Var/getThreadBindingFrame)]
@@ -42,11 +29,24 @@
   (let [call-site-frame (clojure.lang.Var/getThreadBindingFrame)
         [resolve raise] (run-once
                           (fn [v] (with-binding-frame call-site-frame
-                                    (try (r v)
-                                      (catch Throwable t (e t)))))
+                                    (trampoline
+                                      #(try (r v) (catch Throwable t (e t))))))
                           (fn [t] (with-binding-frame call-site-frame
-                                    (e t))))]
-    (apply f (concat args [resolve raise]))))
+                                    (trampoline
+                                      #(e t)))))
+        res-promise (promise)
+        resolve-1 (fn [v]
+                    (deliver res-promise [:sync :return v])
+                    (when (= [:async] @res-promise) (resolve v)))
+        raise-1 (fn [t]
+                  (deliver res-promise [:sync :throw t])
+                  (when (= [:async] @res-promise) (raise t)))]
+    (apply f (concat args [resolve-1 raise-1]))
+    (deliver res-promise [:async])
+    (when (= :sync (first @res-promise))
+      (if (= :return (second @res-promise))
+        #(try (r (nth @res-promise 2)) (catch Throwable t (e t)))
+        #(e (nth @res-promise 2))))))
 
 (defn await
   "Awaits asynchronous execution of continuation-passing style function f,
@@ -85,9 +85,10 @@
                                       (catch Throwable _#))))
           ~r #(try (~resolve %) (catch Throwable t# (~e t#)))]
       (with-binding-frame (clojure.lang.Var/getThreadBindingFrame)
-        (try
-         ~(invert {:r r :e e :terminal-symbols terminal-symbols} `(do ~@body))
-          (catch Throwable t# (~e t#))))
+        (trampoline
+         #(try
+           ~(invert {:r r :e e :terminal-symbols terminal-symbols} `(do ~@body))
+            (catch Throwable t# (~e t#)))))
       nil)))
 
 (defmacro fn-async
