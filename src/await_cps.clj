@@ -48,17 +48,6 @@
         #(try (r (nth @res-promise 2)) (catch Throwable t (e t)))
         #(e (nth @res-promise 2))))))
 
-(defn await
-  "Awaits asynchronous execution of continuation-passing style function f,
-   applying it to args provided plus two extra callback functions: resolve and
-   raise. Returns the value passed to resolve or throws the exception passed
-   to raise. Must execute in an async block."
-  [f & args]
-  (throw (new IllegalStateException "await called outside async block")))
-
-(def ^:no-doc terminal-symbols
-  {`await `do-await})
-
 (defn default-log-raise-exception
   [^Throwable t]
   (println "Uncaught exception executing raise callback:" (.getMessage t)))
@@ -70,6 +59,28 @@
    WARNING: If this function throws too the exception will be silently swallowed."
   default-log-raise-exception)
 
+(defn ^:no-doc run-async
+  [f resolve raise]
+  (let [e #(try (raise %)
+             (catch Throwable t
+               (try (*log-raise-exception* t)
+                 (catch Throwable t))))
+        r #(try (resolve %) (catch Throwable t (e t)))]
+    (with-binding-frame (clojure.lang.Var/getThreadBindingFrame)
+      (trampoline #(try (f %1 %2) (catch Throwable t (e t))) r e)))
+  nil)
+
+(defn await
+  "Awaits asynchronous execution of continuation-passing style function f,
+   applying it to args provided plus two extra callback functions: resolve and
+   raise. Returns the value passed to resolve or throws the exception passed
+   to raise. Must execute in an async block."
+  [f & args]
+  (throw (new IllegalStateException "await called outside async block")))
+
+(def ^:no-doc terminal-symbols
+  {`await `do-await})
+
 (defmacro async
   "Executes the body calling resolve with the result. Exceptions thrown by
    either the body or the resolve function will be raised calling raise.
@@ -80,16 +91,9 @@
   [resolve raise & body]
   (let [r (gensym)
         e (gensym)]
-   `(let [~e #(try (~raise %)
-                (catch Throwable t# (try (*log-raise-exception* t#)
-                                      (catch Throwable _#))))
-          ~r #(try (~resolve %) (catch Throwable t# (~e t#)))]
-      (with-binding-frame (clojure.lang.Var/getThreadBindingFrame)
-        (trampoline
-         #(try
-           ~(invert {:r r :e e :terminal-symbols terminal-symbols} `(do ~@body))
-            (catch Throwable t# (~e t#)))))
-      nil)))
+   `(run-async (fn [~r ~e]
+                ~(invert {:r r :e e :terminal-symbols terminal-symbols} `(do ~@body)))
+               ~resolve ~raise)))
 
 (defmacro fn-async
   "Same as fn but adds &resolve and &raise params and executes the body
