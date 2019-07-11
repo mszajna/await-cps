@@ -126,7 +126,7 @@
 
         recur
         (cond
-          (and sync-recur? (not (has-terminal-symbols? form ctx)))
+          (and sync-recur? (not (has-terminal-symbols? form (dissoc ctx :recur-target))))
           form
 
           recur-target
