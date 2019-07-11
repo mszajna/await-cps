@@ -7,15 +7,6 @@
   (:refer-clojure :exclude [await])
   (:require [await-cps.ioc :refer [invert]]))
 
-(defn ^:no-doc run-once
-  [resolve raise]
-  (let [ctx (atom [resolve raise])
-        call (fn [sel]
-               (fn [v] (let [c @ctx]
-                         (when (zero? (swap! ctx #(if (vector? %) 0 (inc %))))
-                           ((sel c) v)))))]
-    [(call first) (call second)]))
-
 (defmacro ^:no-doc with-binding-frame [frame & body]
  `(let [original-frame# (clojure.lang.Var/getThreadBindingFrame)]
     (clojure.lang.Var/resetThreadBindingFrame ~frame)
@@ -26,27 +17,39 @@
 
 (defn ^:no-doc do-await
   [r e f & args]
-  (let [call-site-frame (clojure.lang.Var/getThreadBindingFrame)
-        [resolve raise] (run-once
-                          (fn [v] (with-binding-frame call-site-frame
-                                    (trampoline
-                                      #(try (r v) (catch Throwable t (e t))))))
-                          (fn [t] (with-binding-frame call-site-frame
-                                    (trampoline
-                                      #(e t)))))
-        res-promise (promise)
-        resolve-1 (fn [v]
-                    (deliver res-promise [:sync :return v])
-                    (when (= [:async] @res-promise) (resolve v)))
-        raise-1 (fn [t]
-                  (deliver res-promise [:sync :throw t])
-                  (when (= [:async] @res-promise) (raise t)))]
-    (apply f (concat args [resolve-1 raise-1]))
-    (deliver res-promise [:async])
-    (when (= :sync (first @res-promise))
-      (if (= :return (second @res-promise))
-        #(try (r (nth @res-promise 2)) (catch Throwable t (e t)))
-        #(e (nth @res-promise 2))))))
+  (let [state (atom [:start])
+        resolve (fn [v] (let [[[before r']]
+                              (swap-vals! state
+                                          #(case (first %)
+                                             :start [:resolved v]
+                                             :async [:completed]
+                                             %))]
+                          (when (= before :async) (r' v))))
+        raise (fn [t] (let [[[before _ e']]
+                            (swap-vals! state
+                                        #(case (first %)
+                                           :start [:raised t]
+                                           :async [:completed]
+                                           %))]
+                        (when (= before :async) (e' t))))]
+    (apply f (concat args [resolve raise]))
+    (let [call-site-frame (clojure.lang.Var/getThreadBindingFrame)
+          safe-r #(try (r %) (catch Throwable t (e t)))
+          other-thread-r #(with-binding-frame call-site-frame
+                            (trampoline safe-r %))
+          other-thread-e #(with-binding-frame call-site-frame
+                            (trampoline e %))
+          [[before x]]
+          (swap-vals! state
+                      #(case (first %)
+                         :start [:async other-thread-r other-thread-e]
+                         :resolved [:completed]
+                         :raised [:completed]
+                         %))]
+      (case before
+        :resolved (partial safe-r x)
+        :raised (partial e x)
+        nil))))
 
 (defn default-log-raise-exception
   [^Throwable t]
@@ -92,7 +95,8 @@
   (let [r (gensym)
         e (gensym)]
    `(run-async (fn [~r ~e]
-                ~(invert {:r r :e e :terminal-symbols terminal-symbols} `(do ~@body)))
+                ~(invert {:r r :e e :terminal-symbols terminal-symbols}
+                         `(do ~@body)))
                ~resolve ~raise)))
 
 (defmacro fn-async
