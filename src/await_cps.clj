@@ -52,22 +52,22 @@
         nil))))
 
 (defn default-log-raise-exception
+  "Default logger for exceptions in raise callbacks prints the message to stdio."
   [^Throwable t]
   (println "Uncaught exception executing raise callback:" (.getMessage t)))
 
 (def ^:dynamic *log-raise-exception*
   "If the raise callback in an async block throws, the exception will be logged
-   with this function.
-
-   WARNING: If this function throws too the exception will be silently swallowed."
+   with this function."
   default-log-raise-exception)
 
 (defn ^:no-doc run-async
   [f resolve raise]
   (let [e #(try (raise %)
              (catch Throwable t
-               (try (*log-raise-exception* t)
-                 (catch Throwable t))))
+               (fn []
+                 (*log-raise-exception* t)
+                 (throw t))))
         r #(try (resolve %) (catch Throwable t (e t)))]
     (with-binding-frame (clojure.lang.Var/getThreadBindingFrame)
       (trampoline #(try (f %1 %2) (catch Throwable t (e t))) r e)))
@@ -81,7 +81,7 @@
   [f & args]
   (throw (new IllegalStateException "await called outside async block")))
 
-(def ^:no-doc terminal-symbols
+(def ^:no-doc terminators
   {`await `do-await})
 
 (defmacro async
@@ -95,7 +95,7 @@
   (let [r (gensym)
         e (gensym)]
    `(run-async (fn [~r ~e]
-                ~(invert {:r r :e e :terminal-symbols terminal-symbols}
+                ~(invert {:r r :e e :terminators terminators}
                          `(do ~@body)))
                ~resolve ~raise)))
 

@@ -5,7 +5,7 @@
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :refer [for-all]]
             [await-cps :refer [async await fn-async defn-async]]
-            [await-cps.ioc :refer [has-terminal-symbols?]]
+            [await-cps.ioc :refer [has-terminators?]]
             [await-cps.generators :as g]))
 
 (def ^:dynamic side-effects nil)
@@ -84,7 +84,7 @@
 
 (defn ->results-gen [code-gen]
   (->> code-gen
-       (gen/such-that #(has-terminal-symbols? % {:terminal-symbols {`await nil}}))
+       (gen/such-that #(has-terminators? % {:terminators {`await nil}}))
        (gen/fmap ->results)
        (gen/such-that #(not (or (instance? VerifyError (:error (:sync %)))
                                 (instance? VerifyError (:error (:async %))))))))

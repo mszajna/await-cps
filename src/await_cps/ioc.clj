@@ -6,13 +6,13 @@
           nsp (.getName ^clojure.lang.Namespace (:ns (meta v)))]
       (symbol (name nsp) (name nm)))))
 
-(defn has-terminal-symbols?
- [form {:keys [terminal-symbols recur-target] :as ctx}]
+(defn has-terminators?
+ [form {:keys [terminators recur-target] :as ctx}]
   (let [sym (when (seq? form) (first form))]
-    (cond (contains? terminal-symbols (var-name sym)) true
+    (cond (contains? terminators (var-name sym)) true
           (and recur-target (= 'recur sym)) true
-          (= 'loop sym) (some #(has-terminal-symbols? % (dissoc ctx :recur-target)) (rest form))
-          (coll? form) (some #(has-terminal-symbols? % ctx) form)
+          (= 'loop sym) (some #(has-terminators? % (dissoc ctx :recur-target)) (rest form))
+          (coll? form) (some #(has-terminators? % ctx) form)
           :else false)))
 
 (defn can-inline?
@@ -25,7 +25,7 @@
 (declare invert)
 
 (defn resolve-sequentially [ctx coll then]
-  (let [[syncs [asn & others]] (split-with #(not (has-terminal-symbols? % ctx)) coll)]
+  (let [[syncs [asn & others]] (split-with #(not (has-terminators? % ctx)) coll)]
     (if asn
       (let [syncs (map #(if (can-inline? %) [%] [(gensym) %]) syncs)
             sync-bindings (->> syncs (filter second) (mapcat identity))
@@ -44,13 +44,13 @@
            e             ; symbol of error handling function (raise)
            sync-recur?   ; indicates when synchronous recur is possible
            recur-target  ; symbol of asynchronous recur function if any
-           terminal-symbols]
+           terminators]  ; map of symbols that break flow to symbols of handlers
     :as ctx}
    form]
   (let [form (macroexpand form)
         [head & tail] (when (seq? form) form)]
     (cond
-      (not (has-terminal-symbols? form ctx))
+      (not (has-terminators? form ctx))
      `(~r ~form)
 
       (and (seq? form) (special-symbol? head))
@@ -62,7 +62,7 @@
         if
         (let [[con left right & unexpected-others] tail
               cont (gensym "cont")]
-          (if (has-terminal-symbols? con ctx)
+          (if (has-terminators? con ctx)
             (let [ctx' (dissoc ctx :sync-recur?)]
              `(letfn [(~cont [con#] (if con# ~(invert ctx' left)
                                              ~(invert ctx' right)
@@ -78,7 +78,7 @@
 
         let*
         (let [[syncs [[sym asn] & others]] (->> tail first (partition 2)
-                                                (split-with #(not (has-terminal-symbols? % ctx))))
+                                                (split-with #(not (has-terminators? % ctx))))
               cont (gensym "cont")]
          `(let* [~@(mapcat identity syncs)]
            ~(if asn
@@ -93,7 +93,7 @@
        `(letfn* ~(first tail) ~(invert ctx `(do ~@(rest tail))))
 
         do
-        (let [[syncs [asn & others]] (split-with #(not (has-terminal-symbols? % ctx)) tail)
+        (let [[syncs [asn & others]] (split-with #(not (has-terminators? % ctx)) tail)
               cont (gensym "cont")]
           (if asn
            `(do ~@syncs
@@ -108,12 +108,12 @@
         (let [[binds & body] tail
               bind-names (->> binds (partition 2) (map first))]
           (cond
-            (has-terminal-symbols? binds ctx)
+            (has-terminators? binds ctx)
             (invert ctx `(let [~@binds]
                            (loop [~@(interleave bind-names bind-names)]
                             ~@body)))
 
-            (has-terminal-symbols? body (dissoc ctx :recur-target))
+            (has-terminators? body (dissoc ctx :recur-target))
             (let [recur-target (gensym "recur")]
              `(letfn [(~recur-target [~@bind-names]
                         (loop [~@(interleave bind-names bind-names)]
@@ -126,7 +126,7 @@
 
         recur
         (cond
-          (and sync-recur? (not (has-terminal-symbols? form (dissoc ctx :recur-target))))
+          (and sync-recur? (not (has-terminators? form (dissoc ctx :recur-target))))
           form
 
           recur-target
@@ -183,7 +183,7 @@
               [_ object & field-args] (when (and (seq? subject)
                                                  (= '. (first subject)))
                                         subject)]
-          (if (and object (has-terminal-symbols? object ctx))
+          (if (and object (has-terminators? object ctx))
             (resolve-sequentially ctx [object args]
               (fn [[object args]] `(~r (set! (. ~object ~@field-args) ~@args))))
             (resolve-sequentially ctx args
@@ -192,8 +192,8 @@
         (throw (ex-info (str "Unsupported special symbol [" head "]")
                         {:unknown-special-form head :form form})))
 
-      (contains? terminal-symbols (var-name head))
-      (let [handler (terminal-symbols (var-name head))]
+      (contains? terminators (var-name head))
+      (let [handler (terminators (var-name head))]
         (resolve-sequentially ctx (rest form) (fn [args] `(~handler ~r ~e ~@args))))
 
       (seq? form)
@@ -207,7 +207,7 @@
 
       (map? form)
       (resolve-sequentially ctx (mapcat identity form)
-        (fn [form] `(~r ~(with-meta (->> form (partition 2) (map vec) (into {})) (meta form)))))
+                            (fn [form] `(~r ~(with-meta (apply array-map form) (meta form)))))
 
       :else (throw (ex-info (str "Unsupported form [" form "]")
                             {:form form})))))
