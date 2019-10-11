@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>await-cps</groupId>
   <artifactId>await-cps</artifactId>
-  <version>0.1.6</version>
+  <version>0.1.7</version>
   <name>await-cps</name>
   <url>https://github.com/mszajna/await-cps</url>
   <description>async/await for continuation-passing style functions</description>
