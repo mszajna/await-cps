@@ -53,7 +53,7 @@
       (not (has-terminators? form ctx))
      `(~r ~form)
 
-      (and (seq? form) (special-symbol? head))
+      (special-symbol? head)
       (case head
 
         (quote var fn* def deftype* reify* clojure.core/import*)

@@ -105,12 +105,12 @@
   {:arglists '([name? [params*] body])}
   [& args]
   (let [[a & [b & cs :as bs]] args
-        [extras params body]
+        [name params body]
         (if (symbol? a)
-          [[a] b cs] [nil a bs])
-        recur-target (gensym)]
-   `(fn ~@extras [~@params ~'&resolve ~'&raise]
-      (async ~'&resolve ~'&raise (loop [~@(interleave params params)] ~@body)))))
+          [a b cs] [nil a bs])
+        param-names (map #(if (symbol? %) % (gensym)) params)]
+   `(fn ~@(when name [name]) [~@param-names ~'&resolve ~'&raise]
+      (async ~'&resolve ~'&raise (loop [~@(interleave params param-names)] ~@body)))))
 
 (defmacro defn-async
   "Same as defn but adds &resolve and &raise params and executes the body
@@ -118,10 +118,11 @@
   {:arglists '([name doc-string? attr-map? [params*] body])}
   [name & args]
   (let [[a & [b & [c & ds :as cs] :as bs]] args
-        [extras params body]
+        [doc attrs params body]
         (if (string? a)
-          (if (map? b) [[a b] c ds] [[a] b cs])
-          (if (map? a) [[a] b cs] [nil a bs]))
-        recur-target (gensym)]
-   `(defn ~name ~@extras [~@params ~'&resolve ~'&raise]
-      (async ~'&resolve ~'&raise (loop [~@(interleave params params)] ~@body)))))
+          (if (map? b) [a b c ds] [a nil b cs])
+          (if (map? a) [nil a b cs] [nil nil a bs]))
+        attrs (assoc attrs :arglists `'([~@params ~'&resolve ~'&raise]))
+        param-names (map #(if (symbol? %) % (gensym)) params)]
+   `(defn ~name ~@(when doc [doc]) ~attrs [~@param-names ~'&resolve ~'&raise]
+      (async ~'&resolve ~'&raise (loop [~@(interleave params param-names)] ~@body)))))
