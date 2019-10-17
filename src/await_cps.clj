@@ -95,7 +95,7 @@
   (let [r (gensym)
         e (gensym)]
    `(run-async (fn [~r ~e]
-                ~(invert {:r r :e e :terminators terminators}
+                ~(invert {:r r :e e :terminators terminators :env &env}
                          `(do ~@body)))
                ~resolve ~raise)))
 

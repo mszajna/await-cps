@@ -1,15 +1,15 @@
 (ns ^:no-doc await-cps.ioc)
 
-(defn var-name [sym]
-  (when-let [v (and (symbol? sym) (resolve sym))]
+(defn var-name [env sym]
+  (when-let [v (and (symbol? sym) (resolve env sym))]
     (let [nm (:name (meta v))
           nsp (.getName ^clojure.lang.Namespace (:ns (meta v)))]
       (symbol (name nsp) (name nm)))))
 
 (defn has-terminators?
- [form {:keys [terminators recur-target] :as ctx}]
+ [form {:keys [terminators recur-target env] :as ctx}]
   (let [sym (when (seq? form) (first form))]
-    (cond (contains? terminators (var-name sym)) true
+    (cond (contains? terminators (var-name env sym)) true
           (and recur-target (= 'recur sym)) true
           (= 'loop sym) (some #(has-terminators? % (dissoc ctx :recur-target)) (rest form))
           (coll? form) (some #(has-terminators? % ctx) form)
@@ -39,19 +39,29 @@
            ~(invert (assoc ctx :r cont) asn))))
       (then coll))))
 
+(defn add-env-syms [ctx syms]
+  ;; This adds mappings to "true" into the environment map. This doesn't quite
+  ;; match what the Clojure compiler does, but I think it's already recommended
+  ;; that macros don't depend on the values in the &env map.
+  (update ctx :env (fnil into {}) (map (fn [sym] [sym true])) syms))
+
 (defn invert
   [{:keys [r             ; symbol of continuation function (resolve)
            e             ; symbol of error handling function (raise)
            sync-recur?   ; indicates when synchronous recur is possible
            recur-target  ; symbol of asynchronous recur function if any
-           terminators]  ; map of symbols that break flow to symbols of handlers
+           terminators   ; map of symbols that break flow to symbols of handlers
+           env]          ; the current macroexpansion environment
     :as ctx}
    form]
-  (let [form (macroexpand form)
-        [head & tail] (when (seq? form) form)]
+  (let [[head & tail] (when (seq? form) form)
+        resolved (when (symbol? head) (resolve env head))]
     (cond
       (not (has-terminators? form ctx))
      `(~r ~form)
+
+      (and resolved (.isMacro resolved))
+      (recur ctx (apply resolved form env tail))
 
       (special-symbol? head)
       (case head
@@ -79,18 +89,19 @@
         let*
         (let [[syncs [[sym asn] & others]] (->> tail first (partition 2)
                                                 (split-with #(not (has-terminators? % ctx))))
-              cont (gensym "cont")]
+              cont (gensym "cont")
+              updated-ctx (add-env-syms ctx (map first syncs))]
          `(let* [~@(mapcat identity syncs)]
            ~(if asn
              `(letfn [(~cont [~sym]
-                       ~(invert (dissoc ctx :sync-recur?)
+                       ~(invert (add-env-syms (dissoc updated-ctx :sync-recur?) [sym])
                                `(let* [~@(mapcat identity others)]
                                   ~@(rest tail))))]
-               ~(invert (assoc ctx :r cont) asn))
-              (invert ctx `(do ~@(rest tail))))))
+               ~(invert (assoc updated-ctx :r cont) asn))
+              (invert updated-ctx `(do ~@(rest tail))))))
 
         letfn*
-       `(letfn* ~(first tail) ~(invert ctx `(do ~@(rest tail))))
+       `(letfn* ~(first tail) ~(invert (add-env-syms ctx (map first (partition 2 (first tail)))) `(do ~@(rest tail))))
 
         do
         (let [[syncs [asn & others]] (split-with #(not (has-terminators? % ctx)) tail)
@@ -192,8 +203,8 @@
         (throw (ex-info (str "Unsupported special symbol [" head "]")
                         {:unknown-special-form head :form form})))
 
-      (contains? terminators (var-name head))
-      (let [handler (terminators (var-name head))]
+      (contains? terminators (var-name env head))
+      (let [handler (terminators (var-name env head))]
         (resolve-sequentially ctx (rest form) (fn [args] `(~handler ~r ~e ~@args))))
 
       (seq? form)
