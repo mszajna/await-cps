@@ -206,12 +206,13 @@
                                  (await b# 1)))))))
 
 (deftest shadowing-symbols
-  ;; Here we shadow the `await` macro with a local function
-  (is (= 1 (:value (run-async timeout `(let [~'await (constantly 1)]
-                                         (~'await (fn [r# e#] (r# 2))))))))
-  ;; Here we shadow the `and` macro with a local function
-  (is (= 1 (:value (run-async timeout `(let [~'and (constantly 1)]
-                                         (~'and (await (fn [r# e#] (r# 2))))))))))
+  (binding [*ns* (find-ns 'await-cps-test)]
+    ;; Here we shadow the `await` macro with a local function
+    (is (= 1 (:value (run-async timeout `(let [~'await (constantly 1)]
+                                           (~'await (fn [r# e#] (r# 2))))))))
+    ;; Here we shadow the `and` macro with a local function
+    (is (= 1 (:value (run-async timeout `(let [~'and (constantly 1)]
+                                           (~'and (await (fn [r# e#] (r# 2)))))))))))
 
 (def ^:dynamic dynamic-var :globally-bound)
 
