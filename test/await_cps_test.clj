@@ -212,7 +212,19 @@
                                            (~'await (fn [r# e#] (r# 2))))))))
     ;; Here we shadow the `and` macro with a local function
     (is (= 1 (:value (run-async timeout `(let [~'and (constantly 1)]
-                                           (~'and (await (fn [r# e#] (r# 2)))))))))))
+                                           (~'and (await (fn [r# e#] (r# 2)))))))))
+    ;; Here we use `letfn` to introduce the binding
+    (is (= 1 (:value (run-async timeout `(letfn [(~'await [x#] 1)]
+                                           (~'await (fn [r# e#] (r# 2))))))))
+    ;; Here we use `loop` to introduce the binding
+    (is (= 1 (:value (run-async timeout `(loop [~'await (constantly 1)]
+                                           (~'await (fn [r# e#] (r# 2))))))))
+    ;; Here we use `catch` to introduce the binding
+    (is (thrown? ClassCastException ;; can't call Exception as function
+                 (:exception (run-async timeout `(try
+                                                   (throw (Exception.))
+                                                   (catch Exception ~'await
+                                                     (~'await (fn [r# e#] (r# 1)))))))))))
 
 (def ^:dynamic dynamic-var :globally-bound)
 

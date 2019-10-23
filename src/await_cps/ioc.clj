@@ -125,11 +125,13 @@
                             ~@body)))
 
             (has-terminators? body (dissoc ctx :recur-target))
-            (let [recur-target (gensym "recur")]
+            (let [recur-target (gensym "recur")
+                  updated-ctx (add-env-syms ctx bind-names)]
              `(letfn [(~recur-target [~@bind-names]
                         (loop [~@(interleave bind-names bind-names)]
-                         ~(invert (assoc ctx :sync-recur? true
-                                             :recur-target recur-target)
+                         ~(invert (assoc updated-ctx
+                                         :sync-recur? true
+                                         :recur-target recur-target)
                                  `(do ~@body))))]
                 (let [~@binds] (~recur-target ~@bind-names))))
 
@@ -166,7 +168,7 @@
                       (try (throw t#)
                        ~@(map (fn [[sym cls bnd & body]]
                                `(~sym ~cls ~bnd
-                                       ~(invert (assoc ctx :r fin :e finThrow)
+                                       ~(invert (assoc (add-env-syms ctx [bnd]) :r fin :e finThrow)
                                                `(do ~@body))))
                               catches))
                       (catch Throwable t# (~finThrow t#))))]
