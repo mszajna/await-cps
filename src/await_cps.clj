@@ -94,7 +94,7 @@
                          `(do ~@body)))
                ~resolve ~raise)))
 
-(defmacro fn-async
+(defmacro afn
   "Defines an asynchronous function. Declared parameters are extended with two
    continuation arguments of &resolve and &raise and these continuations will
    be called with the function result or any exception thrown respectively.
@@ -113,6 +113,13 @@
         param-names (map #(if (symbol? %) % (gensym)) params)]
    `(fn ~@(when name [name]) [~@param-names ~'&resolve ~'&raise]
       (async ~'&resolve ~'&raise (loop [~@(interleave params param-names)] ~@body)))))
+
+(def
+ ^{:macro true
+   :deprecated "0.1.9"
+   :doc "Deprecated - renamed to afn."}
+  fn-async
+  #'afn)
 
 (defmacro defn-async
   "Same as defn but defines an asynchronous function with extra &resolve and

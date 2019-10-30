@@ -28,7 +28,7 @@ while leveraging the power of asynchronous, continuation-passing style functions
 ## Usage
 
 ```clojure
-(require '[await-cps :refer [defn-async fn-async await await!]]
+(require '[await-cps :refer [defn-async afn await await!]]
          '[clj-http.client :as http]
          'cheshire.core) ; required for :as :json
 
@@ -81,7 +81,7 @@ while leveraging the power of asynchronous, continuation-passing style functions
 ;=> "Hi! I'm Leia Organa from Alderaan"
 
 ; afn defines an inline asynchronous function
-(await! (fn-async []
+(await! (afn []
           (str "RRWWWGG => "
                ; asynchronous functions are CPS and so awaitable
                (await star-wars-greeting 13))))
@@ -97,9 +97,9 @@ while leveraging the power of asynchronous, continuation-passing style functions
 
 ### await
 
-`await` works within the scope of an asynchronou function defined with
-`defn-async` and `fn-async`. Although it's not technically a function you can
-place it wherever a function call is syntactically allowed. It executes the CPS
+`await` works within the scope of an asynchronous function defined with
+`defn-async` and `afn`. Although it's not technically a function you can place
+it wherever a function call is syntactically allowed. It executes the CPS
 function along with any arguments provided plus two generated continuations.
 The continuations are generated based on the surrounding code to create the
 illusion of `await` blocking the flow.
@@ -113,8 +113,7 @@ a CPS function to throw in the calling thread. The return value of both,
 the CPS function and the continuation is ignored. The second, exceptional
 continuation only accepts a `Throwable`.
 
-Asynchronous functions produced by `defn-async` and `fn-async` are always
-awaitable.
+Asynchronous functions produced by `defn-async` and `afn` are always awaitable.
 
 ### Asynchronous function's boundary
 
@@ -123,7 +122,7 @@ asynchronous themselves. `await` won't work in any nested `fn`, `reify`, `def`,
 `deftype` or a function bound in `letfn`.
 
 ```clojure
-(await! (fn-async []
+(await! (afn []
           (doall (map (fn [url] (:status (await http/get url {:async true})))
                       ["https://google.com" "https://twitter.com"]))))
 ;=> IllegalStateException await called outside async block
@@ -131,7 +130,7 @@ asynchronous themselves. `await` won't work in any nested `fn`, `reify`, `def`,
 ; use loop/recur to traverse collections
 ; or doseq if you're traversing for side effects only
 
-(await! (fn-async []
+(await! (afn []
           (loop [[url & urls] ["https://google.com" "https://twitter.com"]
                  statuses []]
             (if url
@@ -142,11 +141,11 @@ asynchronous themselves. `await` won't work in any nested `fn`, `reify`, `def`,
 
 ### recur
 
-Recurring a `fn-async` or `defn-async` function the implicit continuation
-arguments are omitted.
+Recurring a `defn-async` or `afn` function, the implicit continuation arguments
+are omitted.
 
 ```clojure
-(await! (fn-async [[url & urls]]
+(await! (afn [[url & urls]]
           (when url
             (println url (:status (await http/get url {:async? true})))
             (recur urls)))
