@@ -74,11 +74,11 @@
   nil)
 
 (defn await
-  "Awaits asynchronous execution of continuation-passing style function f,
+  "Awaits asynchronous execution of continuation-passing style function cps-fn,
    applying it to args plus two extra callback functions: resolve and raise.
    Effectively returns the value passed to resolve or throws the exception
    passed to raise. Must be called in an asynchronous function."
-  [f & args]
+  [cps-fn & args]
   (throw (new IllegalStateException "await called outside asynchronous context")))
 
 (def ^:no-doc terminators
