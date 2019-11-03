@@ -4,7 +4,7 @@
             [clojure.test.check :refer [quick-check]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :refer [for-all]]
-            [await-cps :refer [async await fn-async defn-async]]
+            [await-cps :refer [async await afn defn-async]]
             [await-cps.ioc :refer [has-terminators?]]
             [await-cps.generators :as g]))
 
@@ -253,8 +253,8 @@
   (is (= #'value (:value (run-async timeout `(await value (var value)))))))
 
 (deftest test-fn-async
-  (is (= 1 (:value (run-async timeout `(await (fn-async [] (await value 1)))))))
-  (is (= 0 (:value (run-async timeout `(await (fn-async [a#]
+  (is (= 1 (:value (run-async timeout `(await (afn [] (await value 1)))))))
+  (is (= 0 (:value (run-async timeout `(await (afn [a#]
                                                 (if (> a# 0)
                                                     (recur (await async-return-immediate nil (dec a#))) a#))
                                               10000))))))

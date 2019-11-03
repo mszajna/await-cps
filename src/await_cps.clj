@@ -74,23 +74,18 @@
   nil)
 
 (defn await
-  "Awaits asynchronous execution of continuation-passing style function f,
-   applying it to args provided plus two extra callback functions: resolve and
-   raise. Returns the value passed to resolve or throws the exception passed
-   to raise. Must execute in an async block."
-  [f & args]
-  (throw (new IllegalStateException "await called outside async block")))
+  "Awaits asynchronous execution of continuation-passing style function cps-fn,
+   applying it to args plus two extra callback functions: resolve and raise.
+   Effectively returns the value passed to resolve or throws the exception
+   passed to raise. Must be called in an asynchronous function."
+  [cps-fn & args]
+  (throw (new IllegalStateException "await called outside asynchronous context")))
 
 (def ^:no-doc terminators
   {`await `do-await})
 
 (defmacro async
-  "Executes the body calling resolve with the result. Exceptions thrown by
-   either the body or the resolve function will be raised calling raise.
-
-   Executes in the calling thread up to the first await clause. Execution is
-   then resumed in the thread awaited function run its resolve callback in.
-   This may be the calling thread."
+  "Like ((fn-async [] body*) resolve raise)."
   [resolve raise & body]
   (let [r (gensym)
         e (gensym)]
@@ -99,9 +94,16 @@
                          `(do ~@body)))
                ~resolve ~raise)))
 
-(defmacro fn-async
-  "Same as fn but adds &resolve and &raise params and executes the body
-   in an async block using those as callbacks. Only one arity is allowed."
+(defmacro afn
+  "Defines an asynchronous function. Declared parameters are extended with two
+   continuation arguments of &resolve and &raise and these continuations will
+   be called with the function result or any exception thrown respectively.
+
+   Executes in the calling thread up until the first await clause. Execution is
+   then resumed in the thread awaited function invokes its continuation in.
+   This may still be the calling thread.
+
+   Only one arity is allowed."
   {:arglists '([name? [params*] body])}
   [& args]
   (let [[a & [b & cs :as bs]] args
@@ -112,9 +114,16 @@
    `(fn ~@(when name [name]) [~@param-names ~'&resolve ~'&raise]
       (async ~'&resolve ~'&raise (loop [~@(interleave params param-names)] ~@body)))))
 
+(def
+ ^{:macro true
+   :deprecated "0.1.9"
+   :doc "Deprecated - renamed to afn."}
+  fn-async
+  #'afn)
+
 (defmacro defn-async
-  "Same as defn but adds &resolve and &raise params and executes the body
-   in an async block using those as callbacks. Only one arity is allowed."
+  "Same as defn but defines an asynchronous function with extra &resolve and
+   &raise continuation params. Only one arity is allowed."
   {:arglists '([name doc-string? attr-map? [params*] body])}
   [name & args]
   (let [[a & [b & [c & ds :as cs] :as bs]] args
@@ -126,3 +135,16 @@
         param-names (map #(if (symbol? %) % (gensym)) params)]
    `(defn ~name ~@(when doc [doc]) ~attrs [~@param-names ~'&resolve ~'&raise]
       (async ~'&resolve ~'&raise (loop [~@(interleave params param-names)] ~@body)))))
+
+(defn await!
+  "Like await but blocks the calling thread. Do not use inside an asynchronous
+   function."
+  [f & args]
+  (let [result (promise)
+        resolve #(deliver result [%])
+        raise #(deliver result [nil %])]
+    (apply f (concat args [resolve raise]))
+    (let [[v t] @result]
+      (if t
+        (throw t)
+        v))))
