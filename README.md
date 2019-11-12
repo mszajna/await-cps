@@ -1,224 +1,184 @@
 # await-cps
 
-async/await syntax for continuation-passing style functions
+**async/await** syntax for functions that take a successful- and an exceptional
+callback in the last two arguments, a pattern known as
+[continuation-passing style](https://en.wikipedia.org/wiki/Continuation-passing_style)
+and popularised by
+[Ring](https://github.com/ring-clojure/ring/wiki/Concepts#handlers)
+and
+[clj-http](https://github.com/dakrone/clj-http#async-http-request).
 
 [![Latest version on Clojars](https://clojars.org/await-cps/latest-version.svg)](https://clojars.org/await-cps)
 
-Continuation-passing style
-([CPS](https://en.wikipedia.org/wiki/Continuation-passing_style))
-is a pattern where a function takes an extra 'continuation' argument
-(a callback) and invokes it with
-the result instead of returning the value. In Clojure ecosystem a popular
-flavour of this is to take two continuations for successful and exceptional
-outcome. It is used by Ring for
-[asynchronous handlers](https://github.com/ring-clojure/ring/wiki/Concepts#handlers)
-and by clj-http for
-[asynchronous responses](https://github.com/dakrone/clj-http#async-http-request)
-with the goal of avoiding blocking of the calling thread with long-running
-IO operations.
+[See API docs](https://cljdoc.org/d/await-cps/await-cps/CURRENT/api/await-cps)
 
-Writing correct CPS code is awkward and
-[hard to get right](#how-is-writing-correct-cps-code-by-hand-hard) however.
-Any non-trivial flow can quickly become unmanageable. This library delivers
-async/await syntax that lets you write idiomatic, synchronous-looking code
-while leveraging the power of asynchronous, continuation-passing style functions.
+## Motivation
 
-[API Docs](https://cljdoc.org/d/await-cps/await-cps/CURRENT/api/await-cps)
+Continuation-passing style (CPS) is commonly used in Clojure to implement
+asynchronous flow. For example, a Ring handler could look like this:
+
+```clojure
+(require '[clj-http.client :as http] ; the example requires clj-http
+         'cheshire.core)             ; and cheshire
+
+; asynchronous Ring handlers are CPS functions
+(defn sw-handler [request respond raise]
+  (let [person-id (get-in request [:params :id])
+        person-url (str "https://swapi.co/api/people/" person-id)]
+    ; http/get with :async? option on is a CPS function too
+    (http/get person-url
+              {:async? true :as :json}
+              (fn success [response]
+                (let [name (get-in response [:body :name])]
+                  (respond {:status 200 :body (str "Hi! I'm " name)})))
+              (fn error [exception]
+                (respond {:status 500 :body "server error"})))))
+```
+
+Readability aside, callback-based code tends to suffer from a number of issues:
+- the exceptional case seems to be handled, but, as it turns out, CPS functions
+  often throw in the calling thread instead of raising through the callback,
+- any unhandled exception in either of the continuations has an undefined
+  behaviour, at best, being
+  [silently swallowed](https://stuartsierra.com/2015/05/27/clojure-uncaught-exceptions),
+  at worst, compromising liveliness of the application,
+- `try/finally`-based facilities do not work across callback invocations, and
+  implementing `finally` by hand is notoriously hard.
+
+Neither of the problems is unfixable but writing correct callback-based code is
+difficult, laborious and requires rigorous discipline. *await-cps* delivers
+**async/await** syntax for effortless CPS code that reads like idiomatic
+Clojure.
 
 ## Usage
 
+Asynchronous function, defined with `defn-async` or `afn`, is a CPS function
+where continuations are declared and invoked implicitly. Within its body, any
+CPS function can be `await`-ed creating the illusion of a blocking call.
+
 ```clojure
-(require '[await-cps :refer [defn-async afn await await!]]
-         '[clj-http.client :as http]
-         'cheshire.core) ; required for :as :json
+(require '[await-cps :refer [defn-async afn await await!]])
 
-; a naive, hand-crafted CPS function could look like this
-(defn star-wars-greeting [person-id resolve raise]
-  (let [person-url (str "https://swapi.co/api/people/" person-id)]
-    ; clj-http.client/get with {:async? true} is an example of a CPS function
-    (http/get person-url {:async? true :as :json}
-              (fn [result]
-                (let [person (:body result)]
-                  ; it gets awkward pretty quick with nested calls
-                  ; also, unhandled http/get exceptions are swallowed
-                  (http/get (:homeworld person) {:async? true :as :json}
-                            (fn [result]
-                              (resolve (str "Hi! I'm "
-                                            (:name person)
-                                            " from "
-                                            (get-in result [:body :name]))))
-                            raise)))
-              raise)))
-
-; let's redefine it as an asynchronous function
-(defn-async star-wars-greeting
-  [person-id] ; continuation arguments are injected for you and invoked implicitly
-  (let [person-url (str "https://swapi.co/api/people/" person-id)
-                      ; await does not block the calling thread
-        person (:body (await http/get person-url {:async? true :as :json}))]
-    (str "Hi! I'm " (:name person) " from "
-                 ; you can put your awaits wherever you please
-         (get-in (await http/get (:homeworld person) {:async? true :as :json})
-                 [:body :name]))))
-
-; use await! to run it synchronously in the REPL
-(await! star-wars-greeting 1)
-;=> "Hi! I'm Luke Skywalker from Tatooine"
-
-; asynchronous functions are regular CPS functions
-(clojure.repl/doc star-wars-greeting)
-;=> user/star-wars-greeting
-;=> ([person-id &resolve &raise])
-
-; you can invoke them directly providing callbacks
-(star-wars-greeting 5
-  ; success callback takes the function result
-  println
-  ; failure callback takes the exception
-  #(println "Oops" (.getMessage %)))
-;=> nil
-; notice that the result arrives asynchronously
-;=> "Hi! I'm Leia Organa from Alderaan"
-
-; afn defines an inline asynchronous function
-(await! (afn []
-          (str "RRWWWGG => "
-               ; asynchronous functions are CPS and so awaitable
-               (await star-wars-greeting 13))))
-;=> "RRWWWGG => Hi! I'm Chewbacca from Kashyyyk"
-
-; asynchronous functions of one argument are valid Ring async handlers
-(defn-async star-wars-greeting-handler
-  [request] ; expands to [request respond raise]
-  (if-let [person-id (get-in request [:params :id])]
-    {:status 200 :body (await star-wars-greeting person-id)}
-    {:status 400 :body "id parameter required"}))
+; expands to (defn sw-handler [request respond raise] ...)
+(defn-async sw-handler [request]
+  (let [person-id (get-in request [:params :id])
+        person-url (str "https://swapi.co/api/people/" person-id)]
+    (try            ; await does not actually block the thread
+      (let [response (await http/get person-url {:async? true :as :json})
+            name (get-in response [:body :name])]
+        ; respond callback is called with the result implicitly
+        {:status 200 :body (str "Hi! I'm " name)})
+      (catch Exception e
+        ; handles both, exceptions thrown by http/get and its async errors
+        {:status 500 :body "server error"}))))
+    ; any unhandled exceptions will raise
 ```
 
-### await
-
-`await` works within the scope of an asynchronous function defined with
-`defn-async` and `afn`. Although it's not technically a function you can place
-it wherever a function call is syntactically allowed. It executes the CPS
-function along with any arguments provided plus two generated continuations.
-The continuations are generated based on the surrounding code to create the
-illusion of `await` blocking the flow.
-
-It does not block the calling thread however. The control is passed to the CPS
-function and the execution continues in the thread continuation is invoked in.
-
-Awaitable CPS functions are expected to take two continuation functions as
-their last parameters and eventually invoke one of them. It is acceptable for
-a CPS function to throw in the calling thread. The return value of both,
-the CPS function and the continuation is ignored. The second, exceptional
-continuation only accepts a `Throwable`.
-
-Asynchronous functions produced by `defn-async` and `afn` are always awaitable.
-
-### Asynchronous function's boundary
-
-Functions defined inside an asynchronous function cannot be implicitly made
-asynchronous themselves. `await` won't work in any nested `fn`, `reify`, `def`,
-`deftype` or a function bound in `letfn`.
+Asynchronous functions are regular CPS functions taking a successful- and an
+exceptional callback, one of which is eventually invoked (unless the function
+throws).
 
 ```clojure
-(await! (afn []
-          (doall (map (fn [url] (:status (await http/get url {:async true})))
-                      ["https://google.com" "https://twitter.com"]))))
-;=> IllegalStateException await called outside async block
+(sw-handler
+  {:params {:id 1}}
+  println                              ; first callback takes the result value
+  #(println (.getMessage %)))          ; second callback takes the exception
+;=> nil                                ; the return value isn't very useful
+;=> {:status 200
+;=>  :body "Hi! I'm Luke Skywalker"}   ; but the result is eventually printed
+```
 
-; use loop/recur to traverse collections
-; or doseq if you're traversing for side effects only
+Use `afn` to define an ad-hoc asynchronous function. `await!` is the blocking
+`await`.
 
-(await! (afn []
-          (loop [[url & urls] ["https://google.com" "https://twitter.com"]
-                 statuses []]
-            (if url
-              (recur urls (conj statuses (:status (await http/get url {:async? true}))))
-              statuses))))
+```clojure
+(await!
+  (afn [] (:status (await http/get "https://twitter.com" {:async? true}))))
+;=> 200
+```
+
+### Asynchronous scope
+
+Use of `await` is limited to the body of the asynchronous function defined with
+`defn-async` or `afn`. It does not extend to any functions defined within,
+using `fn`, `letfn`, `reify` or `deftype`. Note that some macros, like `for`,
+expand to a function and will not support awaiting either.
+
+```clojure
+(await!
+  (afn []
+     (for [url ["https://google.com" "https://twitter.com"]]
+       (:status (await http/get url {:async? true})))))
+;=> IllegalStateException await called outside asynchronous scope
+```
+
+For collection traversal use `loop`/`recur`, or `doseq`, if you are traversing
+for the side effects only.
+
+```clojure
+(await!
+  (afn []
+    (loop [[url & urls] ["https://google.com" "https://twitter.com"]
+           statuses []]
+      (if url
+        (let [status (:status (await http/get url {:async? true}))]
+          (recur urls (conj statuses status)))
+        statuses))))
 ;=> [200 200]
 ```
 
-### recur
+### Execution
 
-Recurring a `defn-async` or `afn` function, the implicit continuation arguments
-are omitted.
+This library does not come with an executor. Continuations execute in whatever
+thread the callback is invoked in. This is a simple and efficient model that
+works well with non-blocking code. Use `blocking` macro to execute blocking
+operations in a separate thread and avoid performance and liveliness issues.
 
 ```clojure
-(await! (afn [[url & urls]]
-          (when url
-            (println url (:status (await http/get url {:async? true})))
-            (recur urls)))
-        ["https://google.com" "https://twitter.com"])
+(await!
+  (afn []
+    (await (blocking
+             (slurp "some-large-file")))))
 ```
 
-### try/catch/finally
+### Interoperability
 
-`try/catch/finally` is fully supported. Note however that if a CPS function fails
-to call either the resolve or raise callback the `finally` block may never execute.
-This would be equivalent to
-[killing a thread](https://docs.oracle.com/javase/tutorial/essential/exceptions/finally.html)
-that's executing a regular `try` block.
+`await-cps.java/future-call` applies a CPS function and returns a Java 8
+`CompletableFuture` that can be used with *promesa*, *manifold* or `deref`.
 
-### Monitor operations
+`CompletableFuture`s can be awaited using `await-cps.java/completed`.
+*Manifold* and *core.async* deliver awaitable functions for abstractions of
+their own.
 
-`monitor-enter` and `monitor-exit` are JVM's low level concurrency primitives
-strictly bound to the executing thread and are not supported in asynchronous
-functions (and as a consequence neither is the `locking` macro).
+```clojure
+(require '[await-cps.java :as j]
+         '[manifold.deferred :as d]
+         '[clojure.core.async :as a])
+(import java.util.concurrent.CompletableFuture)
 
-Used across asynchronous calls will lead to concurrency bugs.
-Currently there's no warning if this is to happen.
+(await!
+  (afn []
+    (= (await j/completed (CompletableFuture/completedFuture :value))
+       (await d/on-realized (d/success-deferred :value))
+       (let [ch (a/chan 1)]
+         (await a/put! ch :value) ; put! and take! are not strictly CPS but are
+         (await a/take! ch)))))   ; guaranteed to work with await nonetheless
+;=> true
+```
 
-## Does it work?
+When rolling your own integration, bear in mind the pitfalls of writing
+callback-based code listed at the top.
 
-Being cautious about third-party software applying chainsaw surgery to your
-production code is only fair. A goal of this library is for you to be able
-to use it with confidence.
+## Maturity
 
-The test suite included employs generative testing producing nested combinations
-of expressions, including special forms, synchronous and asynchronous function
-calls, exceptions and side-effects.
-It asserts that both the result (value returned or exception thrown) and
-the order of any side-effects is consistent with what you'd observe executing
-synchronously in a single thread.
+The project has seen limited production use, but it tries to make it up with
+thorough test coverage an generative testing. Arbitrary asynchronous functions
+are generated, and the behaviour is asserted to match what you would expect to
+observe executing it synchronously.
 
-At the same time, the project has not seen extensive production use yet.
-Use with caution. Please, raise any issues through
-[GitHub](https://github.com/mszajna/await-cps/issues).
-
-## How is writing correct CPS code by hand hard?
-
-Even though a bit awkward, a CPS implementation of the happy path tends to be
-straightforward enough. Covering exceptional cases, however, is a whole lot
-harder.
-
-### Uncaught exceptions
-
-Any exceptions not handled by `resolve` callback will likely
-[get swallowed](https://stuartsierra.com/2015/05/27/clojure-uncaught-exceptions).
-Just to be safe you should wrap all your `resovle` functions in a catch-all
-calling `raise`
-
-### Equivalent for try/catch/finally
-
-Writing correct CPS equivalent for `try/catch/finally` block is about
-the trickiest problem this library tackles. It needs to:
-- handle all 3 exit modes of asynchronous function (exception thrown,
-  resolve called, raise called)
-- correctly scope the try/catch block outside the asynchronous function as well
-  as inside the `resolve` callback
-- handle asynchronous body as well as asynchronous catches and finally
-- make sure finally is only ever run once in all cases above.
-
-The amount of edge cases is exactly what inspired the use of generative testing
-in this library. I strongly recommend avoiding roll-your-own solutions without
-thorough coverage.
-
-Even if you are confident that you can get an equivalent for `try/catch/finally`
-right, any `try/finally` facilities (like `with-open`, `binding` and others)
-won't ever work across asynchronous calls without transforming the macroexpanded
-form.
+The core API including `defn-async`, `afn` and `await` is considered stable.
 
 ## License
 
-This project is distributed under [The MIT License](https://github.com/mszajna/await-cps/blob/master/LICENSE).
+This project is distributed under
+[The MIT License](https://github.com/mszajna/await-cps/blob/master/LICENSE).

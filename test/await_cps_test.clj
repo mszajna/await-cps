@@ -38,7 +38,8 @@
             ~'respond #(deliver result# {:value %})
             ~'raise #(deliver result# {:exception %})
             ~@(mapcat #(vector % (str "undef-" %)) g/symbols)]
-        ~async-form
+        (try ~async-form
+          (catch clojure.lang.ExceptionInfo t# (~'raise t#)))
         (deref result# ~timeout {:timeout timeout})))))
 
 (defn run-async* [timeout async-form]
