@@ -79,10 +79,10 @@
   [resolve raise & body]
   (let [r (gensym)
         e (gensym)]
-   `(run-async (fn [~r ~e]
-                ~(invert {:r r :e e :terminators terminators :env &env}
-                         `(do ~@body)))
-               ~resolve ~raise)))
+   `(letfn [(inverted# [~r ~e]
+             ~(invert {:r r :e e :terminators terminators :env &env}
+                     `(do ~@body)))]
+      (run-async nil inverted# ~resolve ~raise))))
 
 (defmacro afn
   "Defines an asynchronous function. Declared arguments are extended with two
@@ -101,13 +101,13 @@
   {:arglists '([name? [params*] body])}
   [& args]
   (let [[a & [b & cs :as bs]] args
-        [name params body]
+        [name args body]
         (if (symbol? a)
           [a b cs] [nil a bs])
-        param-names (map #(if (symbol? %) % (gensym)) params)]
-   `(fn ~@(when name [name]) [~@param-names ~'&resolve ~'&raise]
+        arg-names (map #(if (symbol? %) % (gensym)) args)]
+   `(fn ~@(when name [name]) [~@arg-names ~'&resolve ~'&raise]
       (async ~'&resolve ~'&raise
-             (loop [~@(interleave params param-names)] ~@body)))))
+        (loop [~@(interleave args arg-names)] ~@body)))))
 
 (def
  ^{:macro true
@@ -117,22 +117,20 @@
   #'afn)
 
 (defmacro defn-async
-  "Same as defn but defines an asynchronous function with extra &resolve and
-   &raise continuation params. Only one arity is allowed.
-
-   See also afn"
+  "Like defn, but the function defined is asynchronous (see afn)."
   {:arglists '([name doc-string? attr-map? [params*] body])}
   [name & args]
   (let [[a & [b & [c & ds :as cs] :as bs]] args
-        [doc attrs params body]
+        [doc attrs args body]
         (if (string? a)
           (if (map? b) [a b c ds] [a nil b cs])
           (if (map? a) [nil a b cs] [nil nil a bs]))
-        attrs (assoc attrs :arglists `'([~@params ~'&resolve ~'&raise]))
-        param-names (map #(if (symbol? %) % (gensym)) params)]
-   `(defn ~name ~@(when doc [doc]) ~attrs [~@param-names ~'&resolve ~'&raise]
+        arglists `'([~@args ~'&resolve ~'&raise])
+        attrs (update attrs :arglists #(or % arglists))
+        arg-names (map #(if (symbol? %) % (gensym)) args)]
+   `(defn ~name ~@(when doc [doc]) ~attrs [~@arg-names ~'&resolve ~'&raise]
       (async ~'&resolve ~'&raise
-             (loop [~@(interleave params param-names)] ~@body)))))
+        (loop [~@(interleave args arg-names)] ~@body)))))
 
 (defn ^:no-doc either-promise
   [cps-fn & args]
