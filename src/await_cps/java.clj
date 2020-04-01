@@ -16,11 +16,11 @@
       (catch Throwable t (e t)))
     cf))
 
-(defn completed
-  "When the CompletableFuture is completed successfully calls resolve with the
-   value. If it's completed exceptionally calls raise with the exception.
-   Use with await: (await completed cf)"
-  [cf resolve raise]
+(defn complete
+  "When the CompletableFuture completes successfully, calls resolve with the
+   value. If it completes exceptionally, calls raise with the exception.
+   Use with await: (await complete cf)"
+  [^CompletableFuture cf resolve raise]
   (.handle
     cf
     (reify BiFunction
@@ -28,3 +28,5 @@
         (if t
           (raise t)
           (resolve v))))))
+
+(def ^{:no-doc true} completed complete)

@@ -18,11 +18,11 @@
 (deftest use-java-cf-in-async-function
   (let [cf (new CompletableFuture)]
     (.complete cf true)
-    (is (await-at-most! 200 (afn [] (await j/completed cf)))))
+    (is (await-at-most! 200 (afn [] (await j/complete cf)))))
   (let [cf (new CompletableFuture)]
     (.completeExceptionally cf (ex-info "Success" {}))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Success"
-          (await-at-most! 200 (afn [] (await j/completed cf)))))))
+          (await-at-most! 200 (afn [] (await j/complete cf)))))))
 
 (deftest use-cps-with-java-cf
   (let [cf (j/future-call (afn [] true))]

@@ -143,12 +143,12 @@ operations in a separate thread and avoid performance and liveliness issues.
 
 ### Interoperability
 
-`await-cps.java/future-call` applies a CPS function and returns a Java 8
-`CompletableFuture` that can be used with *promesa*, *manifold* or `deref`.
+`await-cps.java/future-call` applies a CPS function and returns its result as
+a `CompletableFuture`.
 
-`CompletableFuture`s can be awaited using `await-cps.java/completed`.
-*Manifold* and *core.async* deliver awaitable functions for abstractions of
-their own.
+Within an asynchronous function `CompletableFuture`s can be awaited using
+`await-cps.java/complete`. *Manifold* and *core.async* deliver awaitable
+CPS functions for `deferred`s and channels.
 
 ```clojure
 (require '[await-cps.java :as j]
@@ -158,7 +158,7 @@ their own.
 
 (await!
   (afn []
-    (= (await j/completed (CompletableFuture/completedFuture :value))
+    (= (await j/complete (CompletableFuture/completedFuture :value))
        (await d/on-realized (d/success-deferred :value))
        (let [ch (a/chan 1)]
          (await a/put! ch :value) ; put! and take! are not strictly CPS but are

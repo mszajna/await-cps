@@ -237,7 +237,8 @@
          (binding [dynamic-var :locally-bound]
            (:value (run-async timeout `(do (await some-async :a) dynamic-var))))))
   (is (= :locally-bound
-         (:value (run-async timeout `(binding [dynamic-var :locally-bound] (await some-async dynamic-var)))))))
+         (:value (run-async timeout `(binding [dynamic-var :locally-bound] (await some-async dynamic-var))))))
+  (is (= :globally-bound dynamic-var)))
 
 (defn value ([v] v) ([v r e] (future (r v))))
 

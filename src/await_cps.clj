@@ -82,7 +82,7 @@
    `(letfn [(inverted# [~r ~e]
              ~(invert {:r r :e e :terminators terminators :env &env}
                      `(do ~@body)))]
-      (run-async nil inverted# ~resolve ~raise))))
+      (run-async inverted# ~resolve ~raise))))
 
 (defmacro afn
   "Defines an asynchronous function. Declared arguments are extended with two

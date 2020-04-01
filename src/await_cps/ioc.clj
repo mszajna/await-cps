@@ -101,7 +101,9 @@
               (invert updated-ctx `(do ~@(rest tail))))))
 
         letfn*
-       `(letfn* ~(first tail) ~(invert (add-env-syms ctx (map first (partition 2 (first tail)))) `(do ~@(rest tail))))
+       `(letfn* ~(first tail)
+         ~(invert (add-env-syms ctx (->> tail first (partition 2) (map first)))
+                 `(do ~@(rest tail))))
 
         do
         (let [[syncs [asn & others]] (split-with #(not (has-terminators? % ctx)) tail)
@@ -176,7 +178,7 @@
               (catch Throwable t# (~cat t#)))))
 
         throw
-        (resolve-sequentially ctx tail (fn [args] `(~r (throw ~@args))))
+        (resolve-sequentially ctx tail (fn [args] `(throw ~@args)))
 
         new
         (let [[cls & args] tail]
