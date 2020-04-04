@@ -84,11 +84,14 @@
            :async {:error compilation-error}})))))
 
 (defn ->results-gen [code-gen]
-  (->> code-gen
-       (gen/such-that #(has-terminators? % {:terminators {`await nil}}))
-       (gen/fmap ->results)
-       (gen/such-that #(not (or (instance? VerifyError (:error (:sync %)))
-                                (instance? VerifyError (:error (:async %))))))))
+  (as-> code-gen $
+       (gen/such-that #(has-terminators? % {:terminators {`await nil}}) $ 20)
+       (gen/fmap ->results $)
+       (gen/such-that #(not (or (instance? VerifyError (:error (:async %)))
+                                (instance? VerifyError (:error (:sync %)))
+                                (instance? clojure.lang.Compiler$CompilerException (:error (:sync %)))
+                                (instance? ClassFormatError (:error (:sync %)))))
+                      $ 20)))
 
 (defn code-prop [n code-gen predicate]
   (let [prop (for-all [{:keys [sync async]} (->results-gen code-gen)]
@@ -165,9 +168,6 @@
 (defn failing-sync-call [body-gen]
   (gen/fmap (fn [value] `(sync-throw ~(keyword (gensym)) ~value)) body-gen))
 
-; (defn doesnt-throw-verify-errors? [code]
-;   (try (run-sync code) true (catch VerifyError t false)))
-
 (def code-of-reliable-execution-order
   (let [wrapper
         #(gen/frequency [[10 (successful-async-call %)]
@@ -176,8 +176,8 @@
                          [10 (failing-sync-call %)]
 
                          [10 (gen/vector % 0 3)]
-                         [10 (gen/set (unique %) {:min-elements 0 :max-elements 3})]
-                         [10 (gen/map (unique %) % {:min-elements 0 :max-elements 3})]
+                         [10 (gen/set % {:min-elements 0 :max-elements 1})]
+                         [10 (gen/map % % {:min-elements 0 :max-elements 1})]
 
                          [10 (g/an-if %)]
                          [10 (g/a-do %)]
@@ -246,6 +246,7 @@
   (is (= 1 (:value (run-async timeout `(Integer. ^String (await value "1"))))))
   (is (= 5 (:value (run-async timeout `(. ^String (await value "works") length)))))
   (is (= 1 (:value (run-async timeout `(Integer/parseInt "1")))))
+  (is (= 1 (:value (run-async timeout `(. Integer (parseInt "1"))))))
 
   (is (= 8 (:value (run-async timeout `(set! (. (await value (java.awt.Point. 1 2)) -y) 8)))))
   (is (= 8 (:value (run-async timeout `(set! (. (java.awt.Point. 1 2) -y) (await value 8)))))))

@@ -185,7 +185,8 @@
           (resolve-sequentially ctx args (fn [args] `(~r (new ~cls ~@args)))))
 
         .
-        (let [[subject method & args] tail]
+        (let [[subject second] tail
+              [method & args] (if (seq? second) second (rest tail))]
           (if (symbol? subject)
             (resolve-sequentially ctx args
                                   (fn [args] `(~r (. ~subject ~method ~@args))))
