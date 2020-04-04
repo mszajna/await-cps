@@ -11,7 +11,7 @@
   (let [sym (when (seq? form) (first form))]
     (cond (contains? terminators (var-name env sym)) true
           (and recur-target (= 'recur sym)) true
-          (= 'loop sym) (some #(has-terminators? % (dissoc ctx :recur-target)) (rest form))
+          (= 'loop* sym) (some #(has-terminators? % (dissoc ctx :recur-target)) (rest form))
           (coll? form) (some #(has-terminators? % ctx) form)
           :else false)))
 
