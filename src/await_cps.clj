@@ -75,13 +75,18 @@
 (def ^:no-doc terminators
   {`await `do-await})
 
+(def ^:private cljs? (boolean (find-ns 'cljs.analyzer)))
+
 (defmacro async
   "Like ((afn [] body*) resolve raise)."
   [resolve raise & body]
   (let [r (gensym)
         e (gensym)]
    `(letfn [(inverted# [~r ~e]
-             ~(invert {:r r :e e :terminators terminators :env &env}
+             ~(invert {:r r :e e
+                       :terminators terminators
+                       :env &env
+                       :all-ex (if cljs? :default `Throwable)}
                      `(do ~@body)))]
       (run-async inverted# ~resolve ~raise))))
 

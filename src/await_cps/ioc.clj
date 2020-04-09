@@ -51,7 +51,8 @@
            sync-recur?   ; indicates when synchronous recur is possible
            recur-target  ; symbol of asynchronous recur function if any
            terminators   ; map of symbols that break flow to symbols of handlers
-           env]          ; the current macroexpansion environment
+           env           ; the current macroexpansion environment
+           all-ex]       ; the catch all symbol, `Throwable or :default
     :as ctx}
    form]
   (let [[head & tail] (when (seq? form) form)
@@ -162,7 +163,7 @@
               v (gensym) t (gensym)]
          `(letfn [(~fin-do [~v ~t]
                     (try ~(invert ctx `(do ~@finally (if ~t (throw ~t) ~v)))
-                      (catch Throwable t# (~e t#))))
+                      (catch ~all-ex t# (~e t#))))
                   (~fin [v#] (~fin-do v# nil))
                   (~fin-throw [t#] (~fin-do nil t#))
                   (~cat [t#]
@@ -173,9 +174,9 @@
                                        ~(invert (assoc (add-env-syms ctx [bnd]) :r fin :e fin-throw)
                                                `(do ~@body))))
                               catches))
-                      (catch Throwable t# (~fin-do nil t#))))]
+                      (catch ~all-ex t# (~fin-do nil t#))))]
             (try ~(invert (assoc ctx :r fin :e cat) `(do ~@body))
-              (catch Throwable t# (~cat t#)))))
+              (catch ~all-ex t# (~cat t#)))))
 
         throw
         (resolve-sequentially ctx tail (fn [args] `(throw ~@args)))

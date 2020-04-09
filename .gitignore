@@ -1,2 +1,4 @@
 .cpcache/
 target/
+.cljs_nashorn_repl/
+nashorn_code_cache/
