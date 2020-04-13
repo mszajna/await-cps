@@ -155,25 +155,25 @@
               [catches finally] (if (->> cfs last first (= 'finally))
                                   [(drop-last cfs) (rest (last cfs))]
                                   [cfs])
-              fin-do (gensym "fin-do")
+              fin-do (gensym "finally-do")
               fin (gensym "finally")
-              finThrow (gensym "finallyThrow")
+              fin-throw (gensym "finally-throw")
               cat (gensym "catch")
-              v (gensym)]
-         `(letfn [(~fin-do [~v]
-                    (try ~(invert ctx `(do ~@finally (~v)))
+              v (gensym) t (gensym)]
+         `(letfn [(~fin-do [~v ~t]
+                    (try ~(invert ctx `(do ~@finally (if ~t (throw ~t) ~v)))
                       (catch Throwable t# (~e t#))))
-                  (~fin [v#] (~fin-do (constantly v#)))
-                  (~finThrow [t#] (~fin-do #(throw t#)))
+                  (~fin [v#] (~fin-do v# nil))
+                  (~fin-throw [t#] (~fin-do nil t#))
                   (~cat [t#]
                     (try
                       (try (throw t#)
                        ~@(map (fn [[sym cls bnd & body]]
                                `(~sym ~cls ~bnd
-                                       ~(invert (assoc (add-env-syms ctx [bnd]) :r fin :e finThrow)
+                                       ~(invert (assoc (add-env-syms ctx [bnd]) :r fin :e fin-throw)
                                                `(do ~@body))))
                               catches))
-                      (catch Throwable t# (~finThrow t#))))]
+                      (catch Throwable t# (~fin-do nil t#))))]
             (try ~(invert (assoc ctx :r fin :e cat) `(do ~@body))
               (catch Throwable t# (~cat t#)))))
 

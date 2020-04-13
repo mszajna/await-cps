@@ -2,16 +2,19 @@
   "async/await syntax for functions that take a successful- and an exceptional
    callback in the last two arguments, a pattern known as continuation-passing
    style (CPS) and popularised by Ring and clj-http."
-  (:refer-clojure :exclude [await])
+  (:refer-clojure :exclude [await bound-fn])
   (:require [await-cps.ioc :refer [invert]]))
 
-(defmacro ^:no-doc with-binding-frame [frame & body]
- `(let [original-frame# (clojure.lang.Var/getThreadBindingFrame)]
-    (clojure.lang.Var/resetThreadBindingFrame ~frame)
-    (try
-     ~@body
-      (finally
-        (clojure.lang.Var/resetThreadBindingFrame original-frame#)))))
+(defn ^:no-doc bound-fn
+  [f]
+  (let [bound-frame (clojure.lang.Var/getThreadBindingFrame)]
+    (fn [& args]
+      (let [call-site-frame (clojure.lang.Var/getThreadBindingFrame)]
+        (clojure.lang.Var/resetThreadBindingFrame bound-frame)
+        (try
+          (apply f args)
+          (finally
+            (clojure.lang.Var/resetThreadBindingFrame call-site-frame)))))))
 
 (defn ^:no-doc do-await
   [r e f & args]
@@ -31,12 +34,10 @@
                                            %))]
                         (when (= before :async) (e' t))))]
     (apply f (concat args [resolve raise]))
-    (let [call-site-frame (clojure.lang.Var/getThreadBindingFrame)
+    (let [run (bound-fn trampoline)
           safe-r #(try (r %) (catch Throwable t (e t)))
-          other-thread-r #(with-binding-frame call-site-frame
-                            (trampoline safe-r %))
-          other-thread-e #(with-binding-frame call-site-frame
-                            (trampoline e %))
+          other-thread-r #(run safe-r %)
+          other-thread-e #(run e %)
           [[before x]]
           (swap-vals! state
                       #(case (first %)
@@ -51,9 +52,9 @@
 
 (defn ^:no-doc run-async
   [f resolve raise]
-  (with-binding-frame (clojure.lang.Var/getThreadBindingFrame)
-    (trampoline f resolve raise))
-  nil)
+  (let [run (bound-fn trampoline)]
+    (run f resolve raise)
+    nil))
 
 (defn await
   "Awaits the asynchronous execution of continuation-passing style function
