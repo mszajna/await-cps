@@ -3,7 +3,8 @@
    callback in the last two arguments, a pattern known as continuation-passing
    style (CPS) and popularised by Ring and clj-http."
   (:refer-clojure :exclude [await bound-fn])
-  (:require [await-cps.ioc :refer [invert]]))
+  (:require [await-cps.ioc :refer [invert]]
+            [riddley.walk :refer [macroexpand-all]]))
 
 (defn ^:no-doc bound-fn
   [f]
@@ -82,7 +83,7 @@
         e (gensym)]
    `(letfn [(inverted# [~r ~e]
              ~(invert {:r r :e e :terminators terminators :env &env}
-                     `(do ~@body)))]
+                      (macroexpand-all `(do ~@body))))]
       (run-async inverted# ~resolve ~raise))))
 
 (defmacro afn
