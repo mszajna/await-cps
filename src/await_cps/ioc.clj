@@ -1,4 +1,5 @@
-(ns ^:no-doc await-cps.ioc)
+(ns ^:no-doc await-cps.ioc
+  (:require [riddley.walk :refer [macroexpand-all]]))
 
 (defn var-name [env sym]
   (when-let [v (and (symbol? sym) (resolve env sym))]
@@ -11,7 +12,7 @@
   (let [sym (when (seq? form) (first form))]
     (cond (contains? terminators (var-name env sym)) true
           (and recur-target (= 'recur sym)) true
-          (= 'loop sym) (some #(has-terminators? % (dissoc ctx :recur-target)) (rest form))
+          (= 'loop* sym) (some #(has-terminators? % (dissoc ctx :recur-target)) (rest form))
           (coll? form) (some #(has-terminators? % ctx) form)
           :else false)))
 
@@ -55,7 +56,8 @@
     :as ctx}
    form]
   (let [[head & tail] (when (seq? form) form)
-        resolved (when (symbol? head) (resolve env head))]
+        resolved (when (symbol? head) (resolve env head))
+        all-ex (if (:js-globals env) :default `Throwable)]
     (cond
       (not (has-terminators? form ctx))
      `(~r ~form)
@@ -162,7 +164,7 @@
               v (gensym) t (gensym)]
          `(letfn [(~fin-do [~v ~t]
                     (try ~(invert ctx `(do ~@finally (if ~t (throw ~t) ~v)))
-                      (catch Throwable t# (~e t#))))
+                      (catch ~all-ex t# (~e t#))))
                   (~fin [v#] (~fin-do v# nil))
                   (~fin-throw [t#] (~fin-do nil t#))
                   (~cat [t#]
@@ -173,9 +175,9 @@
                                        ~(invert (assoc (add-env-syms ctx [bnd]) :r fin :e fin-throw)
                                                `(do ~@body))))
                               catches))
-                      (catch Throwable t# (~fin-do nil t#))))]
+                      (catch ~all-ex t# (~fin-do nil t#))))]
             (try ~(invert (assoc ctx :r fin :e cat) `(do ~@body))
-              (catch Throwable t# (~cat t#)))))
+              (catch ~all-ex t# (~cat t#)))))
 
         throw
         (resolve-sequentially ctx tail (fn [args] `(throw ~@args)))
@@ -210,7 +212,9 @@
 
       (contains? terminators (var-name env head))
       (let [handler (terminators (var-name env head))]
-        (resolve-sequentially ctx (rest form) (fn [args] `(~handler ~r ~e ~@args))))
+        (resolve-sequentially ctx (rest form)
+          (fn [args] `(letfn [(safe-r# [v#] (try (~r v#) (catch ~all-ex t# (~e t#))))]
+                        (~handler safe-r# ~e ~@args)))))
 
       (seq? form)
       (resolve-sequentially ctx form (fn [form] `(~r ~(seq form))))
@@ -227,3 +231,20 @@
 
       :else (throw (ex-info (str "Unsupported form [" form "]")
                             {:form form})))))
+
+(defmacro coroutine
+  "Defines a function that takes a successful and exceptional continuation,
+   and runs the body, suspending execution whenever any of the terms is
+   encountered, and eventually calling one of the continuations with the
+   result.
+
+   terms is a map of fully qualified terminator symbols to handler symbols.
+   A call of the form (term args..) is forwarded to the corresponding handler
+   (handler succ exc args..), which is expected to eventually call either succ
+   with the value or exc with exception to substitute the original call result
+   and resuming the execution."
+  [terms & body]
+  (let [r (gensym) e (gensym)
+        params {:r r :e e :env &env :terminators terms}
+        expanded (macroexpand-all `(do ~@body))]
+   `(fn [~r ~e] ~(invert params expanded))))

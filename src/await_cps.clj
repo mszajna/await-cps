@@ -3,7 +3,7 @@
    callback in the last two arguments, a pattern known as continuation-passing
    style (CPS) and popularised by Ring and clj-http."
   (:refer-clojure :exclude [await bound-fn])
-  (:require [await-cps.ioc :refer [invert]]))
+  (:require [await-cps.ioc :refer [coroutine]]))
 
 (defn ^:no-doc bound-fn
   [f]
@@ -35,18 +35,15 @@
                         (when (= before :async) (e' t))))]
     (apply f (concat args [resolve raise]))
     (let [run (bound-fn trampoline)
-          safe-r #(try (r %) (catch Throwable t (e t)))
-          other-thread-r #(run safe-r %)
-          other-thread-e #(run e %)
           [[before x]]
           (swap-vals! state
                       #(case (first %)
-                         :start [:async other-thread-r other-thread-e]
+                         :start [:async (partial run r) (partial run e)]
                          :resolved [:completed]
                          :raised [:completed]
                          %))]
       (case before
-        :resolved (partial safe-r x)
+        :resolved (partial r x)
         :raised (partial e x)
         nil))))
 
@@ -75,16 +72,6 @@
 (def ^:no-doc terminators
   {`await `do-await})
 
-(defmacro async
-  "Like ((afn [] body*) resolve raise)."
-  [resolve raise & body]
-  (let [r (gensym)
-        e (gensym)]
-   `(letfn [(inverted# [~r ~e]
-             ~(invert {:r r :e e :terminators terminators :env &env}
-                     `(do ~@body)))]
-      (run-async inverted# ~resolve ~raise))))
-
 (defmacro afn
   "Defines an asynchronous function. Declared arguments are extended with two
    continuation arguments of &resolve and &raise and these continuations will
@@ -107,8 +94,9 @@
           [a b cs] [nil a bs])
         arg-names (map #(if (symbol? %) % (gensym)) args)]
    `(fn ~@(when name [name]) [~@arg-names ~'&resolve ~'&raise]
-      (async ~'&resolve ~'&raise
-        (loop [~@(interleave args arg-names)] ~@body)))))
+      (run-async (coroutine ~terminators
+                            (loop [~@(interleave args arg-names)] ~@body))
+                 ~'&resolve ~'&raise))))
 
 (def
  ^{:macro true
@@ -116,6 +104,13 @@
    :doc "Deprecated - renamed to afn."}
   fn-async
   #'afn)
+
+(defmacro
+ ^{:deprecated "0.1.12"
+   :doc "Deprecated - use ((afn [] body*) resolve raise)."}
+  async
+  [resolve raise & body]
+ `((afn [] ~@body) ~resolve ~raise))
 
 (defmacro defn-async
   "Like defn, but the function defined is asynchronous (see afn)."
@@ -130,8 +125,9 @@
         attrs (update attrs :arglists #(or % arglists))
         arg-names (map #(if (symbol? %) % (gensym)) args)]
    `(defn ~name ~@(when doc [doc]) ~attrs [~@arg-names ~'&resolve ~'&raise]
-      (async ~'&resolve ~'&raise
-        (loop [~@(interleave args arg-names)] ~@body)))))
+      (run-async (coroutine ~terminators
+                            (loop [~@(interleave args arg-names)] ~@body))
+                 ~'&resolve ~'&raise))))
 
 (defn ^:no-doc either-promise
   [cps-fn & args]
