@@ -1,0 +1,11 @@
+- Test with respond/raise that throw to prove no catch/finally blocks execute twice
+- Test that no respond/raise or awaited cps-fn interferes with trampolining
+- swapi seems down a lot, consider using other service
+- Optimise try/catch not to throw again if unnecessary
+- Parallelism
+- Design a method for serial processing that doesn't require loop/recur?
+- Test Java interop for reflection calls
+- Check that meta is handled sufficiently
+
+# Running CLJS with browser
+clojure -A:cljs -m cljs.main -ro "{:launch-browser false}" -H 172.17.0.3 --repl

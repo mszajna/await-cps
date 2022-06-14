@@ -1,0 +1,26 @@
+I keep forgetting so here's a guide for myself about how to make releases.
+
+## Prerequisites
+
+~/.m2/settings.xml needs to be configured with 'clojars' server like this:
+
+<server>
+  <id>clojars</id>
+  <username>mszajna</username>
+  <password>super-secret-password</password>
+</server>
+
+This repo is referred in pom.xml of this project.
+
+
+## Make a release
+
+* Run `clojure -Srepro -Spom` to update pom.xml to match dependencies in deps.edn. Remove any implicit dependencies that aren't actually declared in deps.edn.
+* Bump <version> in pom.xml
+* Commit the version bump to master in a dedicated commit, message of "Release x.x.x"
+* Tag the commit `git tag vx.x.x`. The 'v' is important for cljdocs to pick up the version
+* Build and deploy to clojars running `mvn clean deploy`
+* Push master and the tag `git push origin master vx.x.x`
+* Visit https://clojars.org/await-cps to see a new version is available
+* Click on cljdoc and trigger doc generation for the new release
+
